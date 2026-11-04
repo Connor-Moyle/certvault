@@ -2,6 +2,7 @@
 import hashlib
 import io
 import re
+import shutil
 import logging
 import secrets
 import uuid
@@ -17,14 +18,15 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import ai, config, db, export, extract, notify, scheduler, security, share, versions
+from . import files as files_mod
+from . import ai, config, db, export, extract, files, naming, notify, scheduler, security, share, versions
 from .categories import CATEGORIES, CATEGORY_BY_ID, KINDS, is_register, kind_of
 
 logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("certvault")
 
 STATIC = Path(__file__).parent / "static"
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 
 app = FastAPI(title="CertVault", docs_url=None, redoc_url=None, openapi_url=None)
 worker = ThreadPoolExecutor(max_workers=1)  # one document at a time — gentle on the NAS
@@ -45,6 +47,14 @@ def startup():
         log.warning("  No users yet. Open the web UI and use setup code: %s", SETUP_CODE)
         log.warning("  (also saved to %s)", config.DATA_DIR / "SETUP_CODE.txt")
         log.warning("=" * 60)
+    # clear half-finished uploads
+    import time
+    for t in (config.DATA_DIR / "tmp").glob("*"):
+        try:
+            if t.is_file() and time.time() - t.stat().st_mtime > 86400:
+                t.unlink()
+        except OSError:
+            pass
     # documents stuck in 'processing' after a restart -> re-queue
     for r in db.q("SELECT id FROM documents WHERE status='processing'"):
         worker.submit(process_document, r["id"], "full")
@@ -153,7 +163,12 @@ def process_document(doc_id: str, mode: str = "full"):
         fields = extract.rule_extract(text, scheduler.today_local())
         source = "ocr"
         ai_text = None
-        if ai.enabled():
+        readable = bool(text.strip()) or any(extract.is_visual(e) for _, e in files)
+        if not readable:
+            error = (f"{files_mod.kind_label(row['file_ext'])} file stored safely — CertVault can't read this type, "
+                     "so fill in the details (or add a photo/PDF of it as another page).")
+            fields = {"category": row["category"] or "other", "title": row["title"]}
+        if ai.enabled() and readable:
             try:
                 ai_fields, source = ai.analyse(files, text)
                 ai_text = ai_fields.pop("transcript", None)
@@ -185,6 +200,9 @@ def process_document(doc_id: str, mode: str = "full"):
         vals += [source, error, new_status, ai_text, doc_id]
         db.run(f"UPDATE documents SET {', '.join(sets)} WHERE id=?", vals)
         log.info("Processed %s via %s", doc_id, source)
+        if naming.settings(row["user_id"]).get("name_titles") == "1":
+            fresh = db.q1("SELECT * FROM documents WHERE id=?", (doc_id,))
+            db.run("UPDATE documents SET title=? WHERE id=?", (naming.build(fresh), doc_id))
         export.write_master(row["user_id"])
     except Exception as e:
         log.exception("Processing failed for %s", doc_id)
@@ -346,70 +364,96 @@ def list_documents(user=Depends(security.require_user)):
     return versions.annotate([doc_state(r) for r in rows])
 
 
-async def _read_upload(f: UploadFile):
-    """Validate + normalise one uploaded file. Returns (blob, ext, mime, name) or raises ValueError(msg)."""
+async def _read_upload(f: UploadFile) -> list[files.Stored]:
+    """Stream one upload to disk, then convert/unpack it. Any file type is accepted; a ZIP gives many."""
     limit = config.MAX_UPLOAD_MB * 1024 * 1024
-    data = bytearray()
-    while chunk := await f.read(1024 * 1024):
-        data += chunk
-        if len(data) > limit:
-            raise ValueError(f"larger than {config.MAX_UPLOAD_MB} MB")
-    kind = extract.sniff(bytes(data[:16]), bytes(data), f.filename or "")
-    if not kind:
-        raise ValueError("Unsupported file — use PDF, photo (JPG/PNG/WEBP/HEIC) or a register spreadsheet (XLSX/CSV)")
+    raw = files.tmp_dir() / f"up-{uuid.uuid4().hex}"
+    size = 0
     try:
-        blob, ext, mime = extract.normalise_upload(bytes(data), kind[0])
-    except Exception:
-        raise ValueError("File looks damaged or couldn't be opened")
-    return blob, ext, mime, Path(f.filename or "upload").name[:200]
+        with open(raw, "wb") as out:
+            while chunk := await f.read(4 * 1024 * 1024):
+                size += len(chunk)
+                if size > limit:
+                    raise ValueError(f"larger than {config.MAX_UPLOAD_MB} MB (raise CV_MAX_UPLOAD_MB if you need more)")
+                out.write(chunk)
+        if size == 0:
+            raise ValueError("file is empty")
+        return files.prepare(raw, f.filename or "upload")
+    finally:
+        raw.unlink(missing_ok=True)
 
 
-def _add_page(doc_id: str, blob: bytes, ext: str, mime: str, name: str, label: str | None) -> str:
+def _place(st: files.Stored, file_id: str) -> bool:
+    """Move a prepared file into storage; returns has_thumb."""
+    dest = config.FILES_DIR / f"{file_id}.{st.ext}"
+    shutil.move(str(st.path), dest)
+    return extract.make_thumbnail(dest, st.ext, thumb_path(file_id))
+
+
+def _add_page(doc_id: str, st: files.Stored, label: str | None) -> str:
     pid = uuid.uuid4().hex
-    (config.FILES_DIR / f"{pid}.{ext}").write_bytes(blob)
-    has_thumb = extract.make_thumbnail(config.FILES_DIR / f"{pid}.{ext}", ext, thumb_path(pid))
+    has_thumb = _place(st, pid)
     n = db.q1("SELECT COUNT(*) n FROM doc_pages WHERE doc_id=?", (doc_id,))["n"]
     db.run("INSERT INTO doc_pages(id, doc_id, label, sort, original_name, file_ext, mime, size, sha256, has_thumb) "
            "VALUES(?,?,?,?,?,?,?,?,?,?)",
-           (pid, doc_id, (label or ("Back" if n == 0 else f"Page {n + 2}"))[:40], n + 1, name, ext, mime, len(blob),
-            hashlib.sha256(blob).hexdigest(), int(has_thumb)))
+           (pid, doc_id, (label or ("Back" if n == 0 else f"Page {n + 2}"))[:40], n + 1, st.name, st.ext, st.mime,
+            st.size, st.sha256, int(has_thumb)))
     return pid
 
 
+def _new_document(user_id: int, st: files.Stored) -> str:
+    doc_id = uuid.uuid4().hex
+    has_thumb = _place(st, doc_id)
+    readable = extract.is_visual(st.ext) or st.ext in extract.SHEETS or st.ext in (
+        "docx", "odt", "xls", "txt", "md", "eml", "rtf", "json", "pptx", "html", "xml")
+    db.run("INSERT INTO documents(id, user_id, original_name, file_ext, mime, size, sha256, has_thumb, title, status, extract_error) "
+           "VALUES(?,?,?,?,?,?,?,?,?,'processing',?)",
+           (doc_id, user_id, st.name, st.ext, st.mime, st.size, st.sha256, int(has_thumb), Path(st.name).stem[:100],
+            None if readable else f"{files.kind_label(st.ext)} file stored — it can't be read automatically, so fill in the details."))
+    return doc_id
+
+
 @app.post("/api/documents")
-async def upload(request: Request, files: list[UploadFile] = File(...), group: int = Form(0),
+async def upload(request: Request, files_: list[UploadFile] = File(..., alias="files"), group: int = Form(0),
                  user=Depends(security.require_user)):
-    """group=1: the first file is the front, the rest are the back / extra pages of the SAME document."""
-    if len(files) > 30:
-        raise HTTPException(400, "Max 30 files per request")
+    """Any file type. group=1: the first file is the front, the rest are the back / extra pages of ONE document.
+    ZIPs are unpacked and every file inside imported."""
+    if len(files_) > 200:
+        raise HTTPException(400, "Max 200 files per request")
     results = []
     main_id = None
-    for idx, f in enumerate(files):
+    for f in files_:
         try:
-            blob, ext, mime, name = await _read_upload(f)
+            prepared = await _read_upload(f)
         except ValueError as e:
             results.append({"name": f.filename, "error": str(e)})
             continue
-        if group and main_id:
-            _add_page(main_id, blob, ext, mime, name, None)
-            results.append({"name": f.filename, "id": main_id, "page": True})
+        except Exception as e:
+            log.exception("upload failed")
+            results.append({"name": f.filename, "error": f"Couldn't save: {e}"})
             continue
-        sha = hashlib.sha256(blob).hexdigest()
-        dup = db.q1("SELECT id FROM documents WHERE user_id=? AND sha256=?", (user["id"], sha))
-        if dup:
-            results.append({"name": f.filename, "id": dup["id"], "duplicate": True})
-            continue
-        doc_id = uuid.uuid4().hex
-        (config.FILES_DIR / f"{doc_id}.{ext}").write_bytes(blob)
-        has_thumb = extract.make_thumbnail(config.FILES_DIR / f"{doc_id}.{ext}", ext, thumb_path(doc_id))
-        db.run("INSERT INTO documents(id, user_id, original_name, file_ext, mime, size, sha256, has_thumb, title, status) "
-               "VALUES(?,?,?,?,?,?,?,?,?,'processing')",
-               (doc_id, user["id"], name, ext, mime, len(blob), sha, int(has_thumb), Path(name).stem[:100]))
-        if group:
-            main_id = doc_id
-        else:
-            worker.submit(process_document, doc_id, "full")
-        results.append({"name": f.filename, "id": doc_id})
+        for st in prepared:
+            label = st.name if st.name != files.clean_name(f.filename or "") else f.filename
+            try:
+                if group and main_id:
+                    _add_page(main_id, st, None)
+                    results.append({"name": label, "id": main_id, "page": True})
+                    continue
+                dup = db.q1("SELECT id FROM documents WHERE user_id=? AND sha256=?", (user["id"], st.sha256))
+                if dup:
+                    st.path.unlink(missing_ok=True)
+                    results.append({"name": label, "id": dup["id"], "duplicate": True})
+                    continue
+                doc_id = _new_document(user["id"], st)
+                if group:
+                    main_id = doc_id
+                else:
+                    worker.submit(process_document, doc_id, "full")
+                results.append({"name": label, "id": doc_id, "from_zip": st.name != files.clean_name(f.filename or "")})
+            except Exception as e:
+                log.exception("store failed")
+                st.path.unlink(missing_ok=True)
+                results.append({"name": label, "error": f"Couldn't save: {e}"})
     if main_id:
         worker.submit(process_document, main_id, "full")
     added = [r for r in results if r.get("id") and not r.get("duplicate") and not r.get("page")]
@@ -424,17 +468,21 @@ async def add_page(doc_id: str, request: Request, file: UploadFile = File(...), 
                    user=Depends(security.require_user)):
     row = get_doc(doc_id, user)
     try:
-        blob, ext, mime, name = await _read_upload(file)
+        prepared = await _read_upload(file)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    if not prepared:
+        raise HTTPException(400, "Nothing to add")
+    first, rest = prepared[0], prepared[1:]
     if not row["file_ext"]:  # manual entry: first file becomes the document itself
-        (config.FILES_DIR / f"{doc_id}.{ext}").write_bytes(blob)
-        has_thumb = extract.make_thumbnail(config.FILES_DIR / f"{doc_id}.{ext}", ext, thumb_path(doc_id))
+        has_thumb = _place(first, doc_id)
         db.run("UPDATE documents SET file_ext=?, mime=?, size=?, sha256=?, has_thumb=?, original_name=?, status='processing' WHERE id=?",
-               (ext, mime, len(blob), hashlib.sha256(blob).hexdigest(), int(has_thumb), name, doc_id))
-        worker.submit(process_document, doc_id, "fill")
-        return {"id": doc_id, "main": True}
-    pid = _add_page(doc_id, blob, ext, mime, name, label.strip() or None)
+               (first.ext, first.mime, first.size, first.sha256, int(has_thumb), first.name, doc_id))
+    else:
+        _add_page(doc_id, first, label.strip() or None)
+    for st in rest:
+        _add_page(doc_id, st, None)
+    pid = doc_id
     # re-read with the new side: fully if not yet confirmed, otherwise only fill blanks (keeps your edits)
     db.run("UPDATE documents SET status='processing' WHERE id=?", (doc_id,))
     worker.submit(process_document, doc_id, "full" if row["status"] != "ok" else "fill")
@@ -453,9 +501,8 @@ def get_page(doc_id: str, pid: str, user):
 @app.get("/api/documents/{doc_id}/pages/{pid}/file")
 def page_file(doc_id: str, pid: str, download: int = 0, user=Depends(security.require_user)):
     p = get_page(doc_id, pid, user)
-    return FileResponse(page_path(p), media_type=p["mime"], filename=p["original_name"] or f"page.{p['file_ext']}",
-                        content_disposition_type="attachment" if download else "inline",
-                        headers={"Cache-Control": "private, no-store"})
+    doc = get_doc(doc_id, user)
+    return _serve(page_path(p), p["file_ext"], p["mime"], naming.build(doc, side=p["label"] or "Page", ext=p["file_ext"]), download)
 
 
 @app.get("/api/documents/{doc_id}/pages/{pid}/thumb")
@@ -682,6 +729,53 @@ def share_recent(user=Depends(security.require_user)):
     return seen[:8]
 
 
+# ---- file naming -------------------------------------------------------------------------------
+
+@app.get("/api/naming")
+def naming_info(user=Depends(security.require_user)):
+    s = naming.settings(user["id"])
+    return {"tokens": naming.TOKENS, "separators": naming.SEPARATORS,
+            "datefmts": {k: v[0] for k, v in naming.DATEFMTS.items()}, "current": s, "preview": naming.preview(user["id"], s)}
+
+
+class NamingIn(BaseModel):
+    name_tokens: str = Field(max_length=200)
+    name_sep: str = Field(max_length=5)
+    name_datefmt: str = Field(max_length=10)
+    name_case: str = Field("as-is", max_length=10)
+
+
+@app.post("/api/naming/preview")
+def naming_preview(body: NamingIn, user=Depends(security.require_user)):
+    s = {**naming.settings(user["id"]), **body.model_dump()}
+    return {"preview": naming.preview(user["id"], s)}
+
+
+@app.post("/api/naming/apply-titles")
+def naming_apply(request: Request, user=Depends(security.require_user)):
+    s = naming.settings(user["id"])
+    rows = db.q("SELECT * FROM documents WHERE user_id=? AND status<>'processing'", (user["id"],))
+    for r in rows:
+        db.run("UPDATE documents SET title=?, updated_at=datetime('now') WHERE id=?", (naming.build(r, s), r["id"]))
+    db.log_activity(user["id"], "renamed titles", f"{len(rows)} document(s)", security.client_ip(request))
+    export.write_master(user["id"])
+    return {"renamed": len(rows)}
+
+
+@app.get("/api/share/files")
+def share_files(ids: str, user=Depends(security.require_user)):
+    """Download URLs + nice names for sharing from the phone."""
+    out = []
+    for d in _docs_for(user, ids.split(",")):
+        s = naming.settings(user["id"])
+        pages = page_rows(d["id"])
+        if d["file_ext"]:
+            out.append({"url": f"/api/documents/{d['id']}/file", "name": naming.build(d, s, side="Front" if pages else None, ext=d["file_ext"])})
+        for p in pages:
+            out.append({"url": f"/api/documents/{d['id']}/pages/{p['id']}/file", "name": naming.build(d, s, side=p["label"] or "Page", ext=p["file_ext"])})
+    return out
+
+
 # ---- calendar ---------------------------------------------------------------------------------
 
 @app.get("/api/calendar.ics")
@@ -799,16 +893,30 @@ def rescan_all(user=Depends(security.require_user)):
     return {"queued": len(rows)}
 
 
+DANGEROUS_MIME = ("text/html", "image/svg", "text/xml", "application/xml", "text/javascript", "application/javascript",
+                  "application/xhtml")
+
+
+def _serve(path: Path, ext: str, mime: str, name: str, download: int):
+    """Only PDFs and photos are shown inline; everything else downloads. Uploaded HTML/SVG/JS can
+    never run in the app's origin (attachment + octet-stream + sandbox CSP)."""
+    inline = not download and ext in files.VIEWABLE
+    if not mime or mime.startswith(DANGEROUS_MIME):
+        mime = "application/octet-stream"
+    headers = {"Cache-Control": "private, no-store"}
+    if not inline:  # downloads: can never be rendered as a page in our origin
+        headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+    return FileResponse(path, media_type=mime, filename=name, content_disposition_type="inline" if inline else "attachment",
+                        headers=headers)
+
+
 @app.get("/api/documents/{doc_id}/file")
 def get_file(doc_id: str, download: int = 0, user=Depends(security.require_user)):
     row = get_doc(doc_id, user)
     if not row["file_ext"]:
         raise HTTPException(404, "No file attached")
-    name = (row["title"] or "document").replace('"', "").replace("/", "-")[:80] + "." + row["file_ext"]
-    inline = not download and row["file_ext"] not in extract.TEXT_KINDS  # spreadsheets always download
-    return FileResponse(file_path(row), media_type=row["mime"], filename=name,
-                        content_disposition_type="inline" if inline else "attachment",
-                        headers={"Cache-Control": "private, no-store"})
+    side = "Front" if page_rows(doc_id) else None
+    return _serve(file_path(row), row["file_ext"], row["mime"], naming.build(row, side=side, ext=row["file_ext"]), download)
 
 
 @app.get("/api/documents/{doc_id}/thumb")
@@ -849,7 +957,8 @@ def master_csv(user=Depends(security.require_user)):
 # ---- settings -------------------------------------------------------------------------
 
 USER_KEYS = ["reminder_days", "remind_expired_weekly", "ntfy_url", "ntfy_token", "email_to", "ha_webhook_url",
-             "full_name", "company", "phone", "my_email"]
+             "full_name", "company", "phone", "my_email",
+             "name_tokens", "name_sep", "name_datefmt", "name_case", "name_titles", "library"]
 GLOBAL_KEYS = ["ai_provider", "anthropic_api_key", "anthropic_model", "ollama_url", "ollama_model",
                "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "notify_hour", "public_url"]
 SECRET_KEYS = {"ntfy_token", "anthropic_api_key", "smtp_pass"}
@@ -886,6 +995,17 @@ def put_settings(body: SettingsIn, request: Request, user=Depends(security.requi
             continue
         if k == "reminder_days":
             v = ",".join(str(x) for x in scheduler.parse_days(v))
+        if k == "name_tokens":
+            v = ",".join(t for t in (v or "").split(",") if t in naming.TOKENS) or naming.DEFAULT["name_tokens"]
+        if k == "name_sep" and v not in naming.SEPARATORS:
+            v = naming.DEFAULT["name_sep"]
+        if k == "name_datefmt" and v not in naming.DATEFMTS:
+            v = "iso"
+        if k == "name_case" and v not in ("as-is", "upper", "title", "lower"):
+            v = "as-is"
+        if k in ("name_sep",):
+            db.set_setting(user["id"], k, v)  # keep spaces
+            continue
         if k in ("ntfy_url", "ha_webhook_url") and v and not v.startswith(("http://", "https://")):
             raise HTTPException(400, f"{k} must start with http:// or https://")
         db.set_setting(user["id"], k, (v or "").strip()[:500] or None)
@@ -900,6 +1020,8 @@ def put_settings(body: SettingsIn, request: Request, user=Depends(security.requi
             if k == "notify_hour" and v and not (v.isdigit() and 0 <= int(v) <= 23):
                 raise HTTPException(400, "Hour must be 0-23")
             db.set_setting(0, k, (v or "").strip()[:500] or None)
+    if any(k.startswith("name_") or k == "library" for k in body.user):
+        worker.submit(export.write_master, user["id"])
     return get_settings(user)
 
 

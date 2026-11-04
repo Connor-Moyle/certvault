@@ -3,7 +3,8 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Australia/Perth \
-    CV_DATA_DIR=/data
+    CV_DATA_DIR=/data \
+    TMPDIR=/data/tmp
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-osd poppler-utils tzdata \

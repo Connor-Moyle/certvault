@@ -204,3 +204,8 @@ def write_master(user_id: int) -> None:
         tmp.replace(d / f"{base}.csv")
     except Exception:
         log.exception("Couldn't write master list for user %s", user_id)
+    try:
+        from .naming import write_library
+        write_library(user_id)
+    except Exception:
+        log.exception("Couldn't refresh library for user %s", user_id)

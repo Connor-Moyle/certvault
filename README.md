@@ -9,7 +9,15 @@ Upload a photo or PDF. **AI reads the file and fills in the details**: type, who
 
 ## Features
 
-- **Upload from your phone.** Take a photo with the camera or pick PDFs/images (JPG, PNG, WEBP, HEIC).
+- **Any file, any size, nothing skipped.**
+  - Photos (JPG/PNG/HEIC/WEBP/GIF/BMP), PDFs of any size (default limit 1 GB, `CV_MAX_UPLOAD_MB` to change), multi-page TIFF scans (turned into a PDF), Word (DOCX/ODT), Excel (XLSX/XLS/CSV), emails (EML), text, and **ZIPs, which are unpacked with every file inside imported**.
+  - Anything else (video, CAD, …) is still stored as a document for you to fill in.
+  - Uploads stream to disk with live MB progress. Only system junk like `.DS_Store` / `Thumbs.db` is ignored.
+- **File naming / renaming.** In *Settings → File naming* you pick the parts and their order: holder name, ticket/licence type, classes (CV DG RB), number, issuer, expiry, completed date, year, status. You also choose the separator, date style and letter case, with a live preview.
+  - This naming is used for every download, email attachment, ZIP and phone share.
+  - It can also rename document titles, for new uploads or all at once.
+- **Auto-named library on the NAS.** `/mnt/CME_Nas/certvault/library/<you>/<Group>/<Type>/` holds every file under your naming scheme, kept in sync automatically. These are hard links, so no extra space is used. Share that folder over SMB to browse it from Windows.
+- **Upload from your phone.** Take a photo with the camera or pick any files.
 - **Import a whole folder.** Tap **Import folder** (or drag a folder onto the page on a PC). Every PDF, photo and register spreadsheet inside, including sub-folders, is uploaded in batches. Duplicates are skipped and non-cert files ignored.
 - **Registers.** Rigging gear, height safety gear, test & tag, plant/equipment and other registers, as PDF, photo or **Excel/CSV**. The last inspection date and the earliest *next inspection due* date are pulled out, and reminders say "inspection due" instead of "expires".
 - **Renewals / previous versions.** Upload a renewed ticket and it's grouped with the older copies of the same cert. Only the newest sends reminders. The ⋮ menu on a document shows **Previous / expired versions**, and you can mark one *Not a renewal — keep separate*.
@@ -116,7 +124,7 @@ Tip: enable **dataset encryption** on `certvault` in TrueNAS if you want encrypt
 |---|---|---|
 | `TZ` | `Australia/Perth` | Timezone for reminder days |
 | `CV_DATA_DIR` | `/data` | Where DB and files live |
-| `CV_MAX_UPLOAD_MB` | `25` | Max size per file |
+| `CV_MAX_UPLOAD_MB` | `1024` | Max size per file (MB) |
 | `CV_SESSION_DAYS` | `30` | Idle days before re-login |
 | `CV_COOKIE_SECURE` | `auto` | `true` when served only over HTTPS |
 

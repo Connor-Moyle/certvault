@@ -20,7 +20,7 @@ from PIL import Image
 
 from . import db
 from .categories import CATEGORIES, CATEGORY_BY_ID, HRWL_CLASSES
-from .extract import TEXT_KINDS, page_images
+from .extract import is_visual, page_images
 
 log = logging.getLogger("certvault.ai")
 
@@ -170,15 +170,25 @@ def clean(result: dict) -> dict:
     return out
 
 
+def _pdf_pages(path: Path) -> int:
+    import subprocess
+    try:
+        out = subprocess.run(["pdfinfo", str(path)], capture_output=True, text=True, timeout=30).stdout
+        m = re.search(r"Pages:\s+(\d+)", out)
+        return int(m.group(1)) if m else 1
+    except Exception:
+        return 1
+
+
 Files = list[tuple[Path, str]]  # (path, ext) — main file first, then back / extra pages
 
 
 def _anthropic(files: Files, prompt: str, s: dict) -> dict:
     content, n_img = [], 0
     for i, (path, ext) in enumerate(files):
-        if ext in TEXT_KINDS:
-            continue  # spreadsheet: its text is already in the prompt
-        if ext == "pdf" and path.stat().st_size < 20 * 1024 * 1024:
+        if not is_visual(ext):
+            continue  # spreadsheet / Word / email…: its text is already in the prompt
+        if ext == "pdf" and path.stat().st_size < 20 * 1024 * 1024 and _pdf_pages(path) <= 90:
             content.append({"type": "document", "source": {
                 "type": "base64", "media_type": "application/pdf",
                 "data": base64.b64encode(path.read_bytes()).decode()}})

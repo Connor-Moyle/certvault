@@ -272,10 +272,10 @@ function viewAdd() {
   render(topbar("Add documents", { back: true }) + `
     <div class="drop" id="drop"><div class="big-icon">${icon("upload_file", "xl")}</div>
       <h3>Add a document</h3>
-      <div>Tickets, licences, insurance, rego, warranties, registers… Photos, PDFs or Excel/CSV — or drop a whole folder here.<br>${S.me.ai_enabled ? `${icon("star_shine", "sm")} AI reads every file and fills in the details.` : "Details are read automatically with OCR."}</div></div>
+      <div>Any file: photos, PDFs (any size), Word, Excel, emails, ZIPs — or drop a whole folder. Nothing gets skipped.<br>${S.me.ai_enabled ? `${icon("star_shine", "sm")} AI reads every file and fills in the details.` : "Details are read automatically with OCR."}</div></div>
     <div class="upload-actions three">
       <label class="btn tonal">${icon("photo_camera")}Take photo<input type="file" accept="image/*" capture="environment" class="hidden" id="cam"></label>
-      <label class="btn tonal">${icon("upload_file")}Choose files<input type="file" accept="application/pdf,image/*,.heic,.heif,.xlsx,.xlsm,.csv" multiple class="hidden" id="pick"></label>
+      <label class="btn tonal">${icon("upload_file")}Choose files<input type="file" multiple class="hidden" id="pick"></label>
       <label class="btn tonal">${icon("folder_open")}Import folder<input type="file" webkitdirectory directory multiple class="hidden" id="folder"></label>
     </div>
     <button class="btn outlined manual-btn" id="manual">${icon("note_add")}Add something without a file<span>service due, subscription, BAS, anything with a date</span></button>
@@ -348,49 +348,84 @@ async function filesFromDrop(dt) {
   return out;
 }
 
-const OK_FILE = /\.(pdf|jpe?g|png|webp|heic|heif|xlsx|xlsm|csv)$/i;
+const JUNK = /^(\.ds_store|thumbs\.db|desktop\.ini|\._.*|~\$.*)$/i;
+const VIEWABLE = ["pdf", "jpg", "png", "webp", "gif"];
+
+// POST with upload progress (fetch can't report it)
+function xhrUpload(url, fd, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", url);
+    x.setRequestHeader("X-CSRF-Token", S.me.csrf);
+    x.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded);
+    x.onload = () => {
+      let data = null; try { data = JSON.parse(x.responseText); } catch (e) { /* */ }
+      if (x.status === 401) { location.hash = "#/login"; return reject(new Error("Please log in")); }
+      x.status < 300 ? resolve(data) : reject(new Error((data && data.detail) || `Upload failed (${x.status})`));
+    };
+    x.onerror = () => reject(new Error("Network error — is the NAS reachable?"));
+    x.send(fd);
+  });
+}
 
 async function upload(all, fromFolder = false, group = false) {
   if (!all.length) return;
-  const maxBytes = (S.me.max_upload_mb || 25) * 1048576;
-  const files = all.filter((f) => !f.name.startsWith(".") && (OK_FILE.test(f.name) || /^(image\/|application\/pdf)/.test(f.type)) && f.size <= maxBytes);
-  const skipped = all.length - files.length;
+  const maxBytes = (S.me.max_upload_mb || 1024) * 1048576;
+  const junk = all.filter((f) => JUNK.test(f.name));
+  const tooBig = all.filter((f) => !JUNK.test(f.name) && f.size > maxBytes);
+  const files = all.filter((f) => !JUNK.test(f.name) && f.size <= maxBytes);
   const q = $("#queue");
-  if (!files.length) { snack(`No PDFs or photos found${skipped ? ` (${skipped} other file${skipped > 1 ? "s" : ""} skipped)` : ""}`, 5000); return; }
-  const many = !group && (files.length > 3 || fromFolder);
-  const stats = { added: [], dup: 0, failed: [] };
+  if (!files.length) { snack(tooBig.length ? `Too big: ${tooBig.map((f) => f.name).join(", ")} (max ${S.me.max_upload_mb} MB)` : "Nothing to upload", 6000); return; }
+  const totalBytes = files.reduce((a, f) => a + f.size, 0);
+  const many = !group && (files.length > 3 || fromFolder || totalBytes > 30 * 1048576);
+  const stats = { added: [], dup: 0, failed: tooBig.map((f) => `${f.name}: bigger than ${S.me.max_upload_mb} MB`), zip: 0 };
+  let sent = 0, doneFiles = 0;
+  const mb = (n) => (n / 1048576).toFixed(n > 10485760 ? 0 : 1);
   const drawList = () => `<div class="section-title">Uploading</div><div class="list gap">${files.map((f) => `<div class="item"><div class="lead c-grey">${icon("hourglass_top")}</div>
-    <div class="body"><div class="h">${esc(f.webkitRelativePath || f.name)}</div><div class="s">${(f.size / 1048576).toFixed(1)} MB</div><div class="progress"></div></div></div>`).join("")}</div>`;
-  const drawSummary = (done) => `<div class="card tonal-primary"><div class="head">${icon(done >= files.length ? "task_alt" : "folder_open")}<div>
-    <h3>${done >= files.length ? "Import finished" : `Importing ${done} of ${files.length}`}</h3>
-    <p>${stats.added.length} added${stats.dup ? ` · ${stats.dup} already in CertVault` : ""}${stats.failed.length ? ` · ${stats.failed.length} failed` : ""}${skipped ? ` · ${skipped} skipped (not PDF/photo or too big)` : ""}</p></div></div>
-    <div class="progress det"><span id="bar"></span></div>
+    <div class="body"><div class="h">${esc(f.webkitRelativePath || f.name)}</div><div class="s">${mb(f.size)} MB</div><div class="progress det"><span class="bar"></span></div></div></div>`).join("")}</div>`;
+  const drawSummary = () => { const done = doneFiles >= files.length; return `<div class="card tonal-primary"><div class="head">${icon(done ? "task_alt" : "upload_file")}<div>
+    <h3>${done ? "Import finished" : `Uploading ${doneFiles} of ${files.length} · ${mb(sent)} / ${mb(totalBytes)} MB`}</h3>
+    <p>${stats.added.length} added${stats.zip ? ` (${stats.zip} from ZIPs)` : ""}${stats.dup ? ` · ${stats.dup} already in CertVault` : ""}${stats.failed.length ? ` · ${stats.failed.length} failed` : ""}${junk.length ? ` · ${junk.length} system file${junk.length > 1 ? "s" : ""} ignored` : ""}</p></div></div>
+    <div class="progress det"><span class="bar"></span></div>
     ${stats.failed.length ? `<p>${stats.failed.map((x) => esc(x)).join("<br>")}</p>` : ""}
-    ${done >= files.length && stats.added.length ? `<div class="btn-row end"><a class="btn filled" href="#/">${icon("check")}Done</a></div>` : ""}</div>`;
-  const setBar = (done) => { const b = $("#bar"); if (b) b.style.width = `${Math.round((done / files.length) * 100)}%`; };
-  q.innerHTML = many ? drawSummary(0) : drawList();
-  setBar(0);
-  const BATCH = group ? 30 : 5;
-  for (let i = 0; i < files.length; i += BATCH) {
-    const chunk = files.slice(i, i + BATCH);
+    ${done && stats.added.length ? `<div class="btn-row end"><a class="btn filled" href="#/">${icon("check")}Done</a></div>` : ""}</div>`; };
+  const setBar = () => $$(".bar", q).forEach((b) => (b.style.width = `${Math.min(100, Math.round((sent / Math.max(totalBytes, 1)) * 100))}%`));
+  q.innerHTML = many ? drawSummary() : drawList();
+  setBar();
+  // batches: max 10 files / 64 MB per request; a big file goes on its own
+  const batches = [];
+  if (group) batches.push(files);
+  else {
+    let cur = [], size = 0;
+    for (const f of files) {
+      if (cur.length && (cur.length >= 10 || size + f.size > 64 * 1048576)) { batches.push(cur); cur = []; size = 0; }
+      cur.push(f); size += f.size;
+    }
+    if (cur.length) batches.push(cur);
+  }
+  for (const chunk of batches) {
     const fd = new FormData();
     chunk.forEach((f) => fd.append("files", f, f.name));
     if (group) fd.append("group", "1");
+    const base = sent;
     try {
-      const res = await api("/api/documents", { method: "POST", body: fd });
-      res.forEach((r) => { if (r.error) stats.failed.push(`${r.name}: ${r.error}`); else if (r.duplicate) stats.dup++; else if (!r.page) stats.added.push(r.id); });
+      const res = await xhrUpload("/api/documents", fd, (loaded) => { sent = base + loaded; setBar(); if (many) { const h = $("h3", q); if (h) h.textContent = `Uploading ${doneFiles} of ${files.length} · ${mb(sent)} / ${mb(totalBytes)} MB`; } });
+      res.forEach((r) => { if (r.error) stats.failed.push(`${r.name}: ${r.error}`); else if (r.duplicate) stats.dup++; else if (!r.page) { stats.added.push(r.id); if (r.from_zip) stats.zip++; } });
     } catch (err) {
       chunk.forEach((f) => stats.failed.push(`${f.name}: ${err.message}`));
       if (/log in/i.test(err.message)) return;
     }
-    if (many) { q.innerHTML = drawSummary(Math.min(i + BATCH, files.length)); setBar(Math.min(i + BATCH, files.length)); }
+    sent = base + chunk.reduce((a, f) => a + f.size, 0);
+    doneFiles += chunk.length;
+    if (many) { q.innerHTML = drawSummary(); }
+    setBar();
   }
   await loadDocs();
   if (!many) {
-    stats.failed.forEach((m) => snack(m, 5000));
+    stats.failed.forEach((m) => snack(m, 6000));
     if (stats.added.length === 1 && (files.length === 1 || group)) return void (location.hash = `#/doc/${stats.added[0]}`);
     if (stats.dup && !stats.added.length) snack("Already uploaded");
-    if (stats.added.length) { snack(`${stats.added.length} files uploaded — reading them now`); location.hash = "#/"; }
+    if (stats.added.length) { snack(`${stats.added.length} added — reading them now`); location.hash = "#/"; }
     else q.innerHTML = "";
     return;
   }
@@ -454,10 +489,10 @@ async function viewDoc(id) {
   const canRenew = d.kind !== "ticket" || d.renew_months;
   if (canRenew && d.expiry_date && d.status !== "processing") html += `<div class="btn-row renew-row"><button class="btn tonal" id="renew">${icon("event_repeat")}Mark renewed / done${d.renew_months ? ` <small>(+${d.renew_months} mo)</small>` : ""}</button></div>`;
   html += `<div class="section-title">${sides.length > 1 ? `${sides.length} sides / pages` : sides.length ? "File" : "No file yet"}</div><div class="sides">
-    ${sides.map((sd) => `<div class="side"><a href="${sd.file}" target="_blank" rel="noopener" class="side-img">${sd.thumb ? `<img src="${sd.thumb}" alt="${esc(sd.label)}" loading="lazy">` : `<div class="side-ph">${icon(isSheet && sd.id === "main" ? "table_view" : "description", "xl")}<span>${esc((sd.ext || "").toUpperCase())}</span></div>`}</a>
+    ${sides.map((sd) => `<div class="side"><a href="${sd.file}${VIEWABLE.includes(sd.ext) ? "" : "?download=1"}" ${VIEWABLE.includes(sd.ext) ? 'target="_blank" rel="noopener"' : ""} class="side-img">${sd.thumb ? `<img src="${sd.thumb}" alt="${esc(sd.label)}" loading="lazy">` : `<div class="side-ph">${icon(["xlsx", "xlsm", "xls", "csv"].includes(sd.ext) ? "table_view" : "description", "xl")}<span>${esc((sd.ext || "").toUpperCase())}${VIEWABLE.includes(sd.ext) ? "" : " · tap to download"}</span></div>`}</a>
       <div class="side-cap"><span>${esc(sd.label)}</span>${sd.id !== "main" ? `<button class="icon-btn sm" data-delpage="${sd.id}" aria-label="Remove ${esc(sd.label)}">${icon("close", "sm")}</button>` : ""}</div></div>`).join("")}
     <label class="side add"><div class="side-img"><div class="side-ph">${icon("add_a_photo", "xl")}<span>${!sides.length ? "Add file" : sides.length > 1 || !["ticket", "personal"].includes(d.kind) ? "Add page" : "Add back"}</span></div></div>
-      <input type="file" accept="image/*,application/pdf,.heic,.heif" capture="environment" class="hidden" id="addside"></label>
+      <input type="file" class="hidden" id="addside"></label>
   </div>`;
   html += `<div class="list gap kv">
     ${kv("category", "Type", d.category_name)}
@@ -595,13 +630,9 @@ async function shareSheet(docs) {
       snack("Preparing files…");
       const { text } = await api(`/api/share/text?ids=${ids.join(",")}`);
       const files = [];
-      for (const x of docs) {
-        const full = x.pages ? x : await api(`/api/documents/${x.id}`);
-        const urls = [[`/api/documents/${x.id}/file`, x.file_ext, "front"], ...(full.pages || []).map((p) => [`/api/documents/${x.id}/pages/${p.id}/file`, p.file_ext, p.label])];
-        for (const [u, ext, lab] of urls) {
-          const b = await (await fetch(u, { credentials: "same-origin" })).blob();
-          files.push(new File([b], `${(x.title || "document").replace(/[^\w\- ]+/g, "_")}${urls.length > 1 ? ` - ${lab}` : ""}.${ext}`, { type: b.type }));
-        }
+      for (const it of await api(`/api/share/files?ids=${ids.join(",")}`)) {
+        const b = await (await fetch(it.url, { credentials: "same-origin" })).blob();
+        files.push(new File([b], it.name, { type: b.type }));
       }
       const payload = { title: one ? docs[0].title : "My licences & tickets", text, files };
       if (!navigator.canShare(payload)) delete payload.files;
@@ -756,7 +787,7 @@ async function viewList() {
 // ---------- settings ----------
 async function viewSettings() {
   chrome(true, false);
-  const st = await api("/api/settings");
+  const [st, nm] = await Promise.all([api("/api/settings"), api("/api/naming")]);
   const u = st.user, g = st.global;
   const admin = S.me.is_admin;
   const days = u.reminder_days.split(",").filter(Boolean);
@@ -780,6 +811,19 @@ async function viewSettings() {
     <div class="row2">${field("u", "full_name", "Full name", { ph: "Connor Moyle" })}${field("u", "company", "Business", { ph: "CME (Connor Moyle Engineering)" })}</div>
     <div class="row2">${field("u", "phone", "Phone", { type: "tel", ph: "04xx xxx xxx" })}${field("u", "my_email", "Your email (replies go here)", { type: "email" })}</div>
     <div class="btn-row end"><button class="btn filled" id="savep">Save</button></div></div></div>`;
+  html += `<div class="section-title">File naming</div><div class="card" id="namecard"><div class="form flush">
+    <p>Pick what goes into file names, in order. Used for downloads, email attachments, ZIP packs, phone sharing and the auto-named copy on the NAS.</p>
+    <div class="name-order" id="norder"></div>
+    <div class="chips wrap" id="navail"></div>
+    <div class="row2">
+      <div class="field"><label>Separator</label><select id="nsep">${Object.entries(nm.separators).map(([k, l]) => `<option value="${esc(k)}" ${k === nm.current.name_sep ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
+      <div class="field"><label>Date style</label><select id="ndate">${Object.entries(nm.datefmts).map(([k, l]) => `<option value="${k}" ${k === nm.current.name_datefmt ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></div>
+    </div>
+    <div class="field"><label>Letter case</label><select id="ncase">${[["as-is", "As written"], ["title", "Title Case"], ["upper", "UPPER CASE"], ["lower", "lower case"]].map(([k, l]) => `<option value="${k}" ${k === nm.current.name_case ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+    <div class="name-preview" id="nprev"></div>
+    <div class="switch-row"><div class="body">Also rename document titles<div class="s">New uploads get titled with this pattern too</div></div><input type="checkbox" class="switch" id="ntitles" ${nm.current.name_titles === "1" ? "checked" : ""}></div>
+    <div class="switch-row"><div class="body">Keep a neatly named copy on the NAS<div class="s">Folder <code>library</code> in the CertVault dataset, sorted by group and type — no extra space used</div></div><input type="checkbox" class="switch" id="nlib" ${nm.current.library === "1" ? "checked" : ""}></div>
+    <div class="btn-row end"><button class="btn text" id="napply">Rename all titles now</button><button class="btn filled" id="nsave">Save</button></div></div></div>`;
   html += `<div class="section-title">Notifications</div><div class="card"><div class="form flush">
     ${field("u", "ntfy_url", "ntfy topic URL (phone push)", { ph: "https://ntfy.sh/certvault-xxxx", hint: 'Install the <b>ntfy</b> app from the Play Store and subscribe to the same topic. <button class="btn text" type="button" id="gentopic">Make a private topic</button>' })}
     ${field("u", "ntfy_token", "ntfy access token (optional)", { type: "password" })}
@@ -841,6 +885,34 @@ async function viewSettings() {
     const rnd = [...crypto.getRandomValues(new Uint8Array(9))].map((b) => b.toString(36).padStart(2, "0")).join("").slice(0, 16);
     $("[name=ntfy_url]").value = `https://ntfy.sh/certvault-${rnd}`;
     snack("Private topic created — save, then subscribe to it in the ntfy app");
+  });
+  // file naming
+  let order = (nm.current.name_tokens || "").split(",").filter((t) => nm.tokens[t]);
+  const nmVals = () => ({ name_tokens: order.join(","), name_sep: $("#nsep").value, name_datefmt: $("#ndate").value, name_case: $("#ncase").value });
+  let pvT;
+  const drawNaming = () => {
+    $("#norder").innerHTML = order.length ? order.map((t, i) => `<span class="ntok">${i ? `<button class="icon-btn sm" data-left="${i}" aria-label="Move left">${icon("arrow_back", "sm")}</button>` : ""}<b>${esc(nm.tokens[t])}</b><button class="icon-btn sm" data-rm="${t}" aria-label="Remove">${icon("close", "sm")}</button></span>`).join("")
+      : `<span class="hint">Nothing picked — titles will be used</span>`;
+    $("#navail").innerHTML = Object.entries(nm.tokens).filter(([k]) => !order.includes(k)).map(([k, l]) => `<button type="button" class="fchip" data-add="${k}">${icon("add")}${esc(l)}</button>`).join("");
+    $$("[data-left]").forEach((b) => b.addEventListener("click", () => { const i = +b.dataset.left; [order[i - 1], order[i]] = [order[i], order[i - 1]]; drawNaming(); }));
+    $$("[data-rm]").forEach((b) => b.addEventListener("click", () => { order = order.filter((t) => t !== b.dataset.rm); drawNaming(); }));
+    $$("[data-add]").forEach((b) => b.addEventListener("click", () => { order.push(b.dataset.add); drawNaming(); }));
+    clearTimeout(pvT);
+    pvT = setTimeout(async () => {
+      try { const r = await api("/api/naming/preview", { method: "POST", body: nmVals() });
+        $("#nprev").innerHTML = r.preview.length ? `<div class="s">Example</div>${r.preview.map((x) => `<div class="code">${esc(x)}</div>`).join("")}` : `<div class="s">Upload a document to see an example</div>`;
+      } catch (e) { /* ignore */ }
+    }, 200);
+  };
+  ["#nsep", "#ndate", "#ncase"].forEach((sel) => $(sel).addEventListener("change", drawNaming));
+  drawNaming();
+  $("#nsave").addEventListener("click", async () => {
+    try { await saveUser({ ...nmVals(), name_titles: $("#ntitles").checked ? "1" : "0", library: $("#nlib").checked ? "1" : "0" }); snack("Naming saved — NAS copy updating"); } catch (e) { snack(e.message); }
+  });
+  $("#napply").addEventListener("click", async () => {
+    if (!(await confirmDlg("Rename every title?", "All your document titles will be replaced using this naming pattern. You can still edit any title afterwards.", "Rename all", false))) return;
+    await saveUser({ ...nmVals() });
+    const r = await api("/api/naming/apply-titles", { method: "POST" }); await loadDocs(); snack(`${r.renamed} titles renamed`);
   });
   $("#savep").addEventListener("click", async (e) => { try { await saveUser(collect("u", e.target.closest(".card"))); snack("Saved"); } catch (er) { snack(er.message); } });
   $("#act").addEventListener("click", async () => {

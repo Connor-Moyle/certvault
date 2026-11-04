@@ -29,15 +29,17 @@ def safe(name: str) -> str:
 
 
 def doc_files(doc) -> list[tuple[str, "Path", str]]:
-    """[(download name, path, mime)] for the main file + every extra side/page."""
-    base = safe(doc["title"] or doc["original_name"] or "document")
+    """[(download name, path, mime)] for the main file + every extra side/page, named by your naming scheme."""
+    from . import naming
+    s = naming.settings(doc["user_id"])
+    pages = db.q("SELECT * FROM doc_pages WHERE doc_id=? ORDER BY sort, created_at", (doc["id"],))
     out = []
     if doc["file_ext"]:
-        out.append((f"{base}{' - front' if _page_count(doc['id']) else ''}.{doc['file_ext']}",
+        out.append((naming.build(doc, s, side="Front" if pages else None, ext=doc["file_ext"]),
                     config.FILES_DIR / f"{doc['id']}.{doc['file_ext']}", doc["mime"]))
-    for p in db.q("SELECT * FROM doc_pages WHERE doc_id=? ORDER BY sort, created_at", (doc["id"],)):
-        label = safe(p["label"] or "page")
-        out.append((f"{base} - {label.lower()}.{p['file_ext']}", config.FILES_DIR / f"{p['id']}.{p['file_ext']}", p["mime"]))
+    for p in pages:
+        out.append((naming.build(doc, s, side=p["label"] or "Page", ext=p["file_ext"]),
+                    config.FILES_DIR / f"{p['id']}.{p['file_ext']}", p["mime"]))
     return out
 
 
@@ -103,10 +105,15 @@ def send_email(user_id: int, username: str, docs, to: list[str], cc: list[str], 
                 if not path.exists():
                     continue
                 data = path.read_bytes()
+                if len(data) > 3 * 1024 * 1024:  # big photos: send an email-sized copy
+                    from .files import shrink_for_email
+                    small = shrink_for_email(path, name.rsplit(".", 1)[-1].lower())
+                    if small:
+                        data, mime, name = small, "image/jpeg", name.rsplit(".", 1)[0] + ".jpg"
                 total += len(data)
                 if total > MAX_EMAIL_BYTES:
-                    raise RuntimeError("That's more than 20 MB of files — too big for most inboxes. "
-                                       "Send fewer documents, or use Download ticket pack (ZIP) instead.")
+                    raise RuntimeError("Those files add up to more than 20 MB even after shrinking photos — too big for "
+                                       "most inboxes. Send fewer at a time, or use Ticket pack (ZIP) / Phone apps instead.")
                 maintype, subtype = (mime or "application/octet-stream").split("/", 1)
                 msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
     if attach_list:

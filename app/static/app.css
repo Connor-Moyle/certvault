@@ -508,3 +508,12 @@ details summary { display: flex; align-items: center; gap: 6px; }
 .renew-row { margin-top: -4px; }
 .renew-row small { font-weight: 400; opacity: .8; }
 optgroup { font-weight: 600; }
+
+/* file naming */
+.name-order { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-height: 40px; padding: 8px; border-radius: var(--r-md); background: var(--sc-highest); }
+.ntok { display: inline-flex; align-items: center; gap: 2px; height: 36px; padding: 0 2px 0 12px; border-radius: var(--r-sm); background: var(--primary-c); color: var(--on-primary-c); font-size: 14px; }
+.ntok:has(.icon-btn[data-left]) { padding-left: 2px; }
+.ntok .icon-btn { color: inherit; }
+.ntok b { font-weight: 500; }
+.name-preview .code { margin-top: 6px; }
+.name-preview .s { font-size: 12px; color: var(--on-surface-v); }

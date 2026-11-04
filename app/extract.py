@@ -21,13 +21,19 @@ try:
 except Exception:  # pragma: no cover
     HEIF_OK = False
 
-Image.MAX_IMAGE_PIXELS = 80_000_000  # guard against decompression bombs
+Image.MAX_IMAGE_PIXELS = 250_000_000  # big panoramas/scans OK; still guards against decompression bombs
 
 
 # ---- file type detection ----------------------------------------------------
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-TEXT_KINDS = ("xlsx", "csv")  # spreadsheet registers: no image, text only
+TEXT_KINDS = ("xlsx", "csv")  # kept for compatibility
+SHEETS = ("xlsx", "xlsm", "csv")
+
+
+def is_visual(ext: str | None) -> bool:
+    """Files we can render to images for OCR / AI vision / thumbnails."""
+    return ext in ("pdf", "jpg", "png", "webp", "gif")
 
 
 def sniff(head: bytes, data: bytes = b"", filename: str = "") -> tuple[str, str] | None:
@@ -157,7 +163,7 @@ def spreadsheet_text(path: Path, ext: str, max_chars: int = 40000) -> str:
 
 
 def page_images(path: Path, ext: str) -> list[Image.Image]:
-    if ext in TEXT_KINDS:
+    if not is_visual(ext):
         return []
     if ext == "pdf":
         return pdf_pages_to_images(path)
@@ -215,6 +221,19 @@ def _adaptive(g: Image.Image) -> Image.Image:
     return Image.fromarray(out).filter(ImageFilter.MedianFilter(3))
 
 
+def _stretch(g: Image.Image) -> Image.Image:
+    """Contrast stretch that can't blank out sparse pages (one line of text on white)."""
+    import numpy as np
+    a = np.asarray(g)
+    lo, hi = np.percentile(a, 0.5), np.percentile(a, 99.5)
+    if hi - lo < 40:  # mostly one colour: plain min/max stretch instead
+        lo, hi = a.min(), a.max()
+    if hi <= lo:
+        return g
+    out = np.clip((a.astype(np.float32) - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
+    return Image.fromarray(out)
+
+
 def _ocr_best(variants) -> tuple[str, float, float]:
     """Run Tesseract over several preprocessed images / layouts and keep the most confident result,
     dropping low-confidence junk words and garbage lines."""
@@ -238,7 +257,8 @@ def _ocr_best(variants) -> tuple[str, float, float]:
                     conf = -1
                 if not word or conf < 0:
                     continue
-                if conf >= 50 or (conf >= 30 and re.fullmatch(r"[\d/.\-:]{4,}", word)):
+                if conf >= 50 or (conf >= 25 and (re.fullmatch(r"[\d/.\-:]{4,}", word)
+                                                  or re.fullmatch(r"[A-Z]{3,}[A-Z0-9]*\d{2,}[A-Z]?", word))):
                     key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
                     lines.setdefault(key, []).append(word)
                     good.append(conf)
@@ -282,8 +302,7 @@ def ocr_image(img: Image.Image) -> str:
                 c = _deskew(c)
             except Exception as e:
                 log.info("deskew skipped: %s", e)
-            c = ImageOps.autocontrast(c, cutoff=1)
-            out.append(c)
+            out.append(_stretch(c))
             try:
                 out.append(_adaptive(c))
             except Exception as e:
@@ -302,8 +321,11 @@ def ocr_image(img: Image.Image) -> str:
 
 
 def get_text(path: Path, ext: str) -> str:
-    if ext in TEXT_KINDS:
+    if ext in SHEETS:
         return spreadsheet_text(path, ext)
+    if not is_visual(ext):
+        from .files import document_text
+        return document_text(path, ext)
     text = pdf_text(path) if ext == "pdf" else ""
     if len(text.strip()) < 40:  # scanned PDF or image -> OCR
         parts = []
@@ -317,7 +339,7 @@ def get_text(path: Path, ext: str) -> str:
 
 
 def make_thumbnail(path: Path, ext: str, out: Path) -> bool:
-    if ext in TEXT_KINDS:
+    if not is_visual(ext):
         return False
     try:
         if ext == "pdf":
@@ -516,7 +538,7 @@ def has_code(upper: str, code: str) -> bool:
 
 
 def detect_category(text: str) -> str:
-    low = " " + re.sub(r"\s+", " ", text.lower()) + " "
+    low = " " + re.sub(r"\s+", " ", re.sub(r"[^\w'&/\-]+", " ", text.lower().replace("’", "'"))) + " "
     upper = text.upper()
     best, best_score = "other", 0
     for c in CATEGORIES:

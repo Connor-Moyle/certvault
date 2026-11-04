@@ -7,8 +7,8 @@ Add your own by appending to CATEGORIES — the UI and AI prompt pick them up au
 
 CATEGORIES = [
     {"id": "drivers_licence", "name": "Driver's Licence", "icon": "directions_car", "color": "blue",
-     "keywords": ["driver's licence", "drivers licence", "driver licence", "driving licence", "licence class",
-                  "driver's license", "drivers license"],
+     "keywords": ["driver's licence", "drivers licence", "driver licence", "driving licence",
+                  "driver's license", "drivers license", "learner's permit", "probationary"],
      "codes": [], "validity_years": None},
     {"id": "hrwl", "name": "High Risk Work Licence", "icon": "license", "color": "orange",
      "keywords": ["high risk work", "hrwl", "licence to perform high risk work", "high risk licence"],
@@ -158,7 +158,7 @@ CATEGORIES = [
      "keywords": ["fitness for work", "pre-employment medical", "medical assessment", "fit for work", "functional capacity",
                   "periodic medical", "spirometry", "audiometric", "hearing test", "drug and alcohol", "d&a test"],
      "codes": [], "validity_years": 2},
-    {"id": "other", "name": "Other", "icon": "description", "color": "grey",
+    {"id": "other", "name": "Other", "icon": "description", "color": "grey", "kind": "other",
      "keywords": [], "codes": [], "validity_years": None},
 ]
 
@@ -181,6 +181,8 @@ KINDS = {
                   "done": "Issued", "exp": "Expires", "verb": "expires", "cost": "Cost"},
     "asset":     {"name": "Warranties & equipment", "icon": "verified", "issuer": "Bought from / serviced by", "number": "Serial / receipt no.",
                   "done": "Purchased / serviced", "exp": "Warranty ends / next due", "verb": "is due", "cost": "Price"},
+    "other":     {"name": "Other", "icon": "folder_open", "issuer": "From", "number": "Reference",
+                  "done": "Date", "exp": "Expires / due", "verb": "is due", "cost": "Cost"},
     "medical":   {"name": "Work medicals", "icon": "medical_information", "issuer": "Clinic / provider", "number": "Reference",
                   "done": "Assessed", "exp": "Next due", "verb": "is due", "cost": "Cost"},
 }

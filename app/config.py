@@ -8,7 +8,7 @@ THUMBS_DIR = DATA_DIR / "thumbs"
 DB_PATH = DATA_DIR / "certvault.db"
 
 # Max upload size in MB
-MAX_UPLOAD_MB = int(os.environ.get("CV_MAX_UPLOAD_MB", "25"))
+MAX_UPLOAD_MB = int(os.environ.get("CV_MAX_UPLOAD_MB", "1024"))
 
 # Set to "true" when the app is served over HTTPS (e.g. Tailscale serve / reverse proxy)
 # so the session cookie is marked Secure. "auto" trusts X-Forwarded-Proto / request scheme.
@@ -25,5 +25,8 @@ LOG_LEVEL = os.environ.get("CV_LOG_LEVEL", "INFO")
 
 
 def ensure_dirs() -> None:
-    for d in (DATA_DIR, FILES_DIR, THUMBS_DIR):
+    for d in (DATA_DIR, FILES_DIR, THUMBS_DIR, DATA_DIR / "tmp"):
         d.mkdir(parents=True, exist_ok=True)
+    # big uploads spool to the data disk, not RAM-backed /tmp
+    import tempfile
+    tempfile.tempdir = str(DATA_DIR / "tmp")
