@@ -28,10 +28,16 @@ def safe(name: str) -> str:
     return re.sub(r"[^\w\-. ()&']+", "_", name or "document").strip()[:90] or "document"
 
 
-def doc_files(doc) -> list[tuple[str, "Path", str]]:
-    """[(download name, path, mime)] for the main file + every extra side/page, named by your naming scheme."""
-    from . import naming
+def doc_files(doc, prefer_pdf: bool | None = None) -> list[tuple[str, "Path", str]]:
+    """[(download name, path, mime)]: the combined PDF (default), or the original file + every extra side/page,
+    named by your naming scheme."""
+    from . import naming, pdfconv
     s = naming.settings(doc["user_id"])
+    if prefer_pdf is None:
+        prefer_pdf = db.get_setting(doc["user_id"], "share_format", "pdf") == "pdf"
+    pdf = pdfconv.combined_path(doc["id"])
+    if prefer_pdf and pdf.exists():
+        return [(naming.build(doc, s, ext="pdf"), pdf, "application/pdf")]
     pages = db.q("SELECT * FROM doc_pages WHERE doc_id=? ORDER BY sort, created_at", (doc["id"],))
     out = []
     if doc["file_ext"]:
@@ -139,6 +145,20 @@ def send_email(user_id: int, username: str, docs, to: list[str], cc: list[str], 
 
 def _list_xlsx(doc_ids: list[str], user_id: int, username: str) -> bytes:
     return export.xlsx_bytes(user_id, username, only_ids=set(doc_ids))
+
+
+def pack_pdf(user_id: int, username: str, docs) -> bytes:
+    from . import pdfconv
+    us = db.get_settings(user_id)
+    rows = [["Document", "Type", "Issued by", "Number", "Classes", "Completed", "Expires / due"]]
+    for d in docs:
+        cat = CATEGORY_BY_ID.get(d["category"] or "other", CATEGORY_BY_ID["other"])
+        rows.append([d["title"] or "", cat["name"], d["issuer"] or "", d["licence_number"] or "",
+                     " ".join(c.split(" – ")[0] for c in (d["classes"] or "").split(";") if c.strip()),
+                     _fmt(d["completion_date"]) if d["completion_date"] else "",
+                     ("No expiry" if d["no_expiry"] else _fmt(d["expiry_date"])) if (d["expiry_date"] or d["no_expiry"]) else ""])
+    owner = [x for x in (us.get("full_name") or username, us.get("company"), us.get("phone"), us.get("my_email")) if x]
+    return pdfconv.pack_pdf("Licences, tickets & documents", rows, [pdfconv.combined_path(d["id"]) for d in docs], owner)
 
 
 def zip_pack(user_id: int, username: str, docs) -> bytes:

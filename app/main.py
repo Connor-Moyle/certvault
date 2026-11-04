@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import files as files_mod
+from . import pdfconv
 from . import ai, config, db, export, extract, files, naming, notify, scheduler, security, share, versions
 from .categories import CATEGORIES, CATEGORY_BY_ID, KINDS, is_register, kind_of
 
@@ -60,6 +61,10 @@ def startup():
         worker.submit(process_document, r["id"], "full")
     for u in db.q("SELECT id FROM users"):
         export.write_master(u["id"])
+    # make PDFs for documents uploaded before v1.6
+    for r in db.q("SELECT id FROM documents WHERE file_ext IS NOT NULL AND COALESCE(has_pdf,'0') IN ('0', 0) "
+                  "AND status<>'processing'"):
+        worker.submit(build_pdf_and_sync, r["id"])
     scheduler.start()
 
 
@@ -104,6 +109,7 @@ def doc_state(row) -> dict:
     d["color"] = cat["color"]
     d["kind"] = cat["kind"]
     d["has_file"] = bool(d["file_ext"])
+    d["has_pdf"] = str(d.get("has_pdf") or "0") in ("1", "True")
     d["renew_months"] = int(d["renew_months"]) if str(d.get("renew_months") or "").isdigit() else None
     return d
 
@@ -129,6 +135,29 @@ EXTRACTED = ["title", "category", "issuer", "issuer_type", "holder_name", "licen
              "classes", "rto_code", "cost"]
 
 
+def build_pdf(doc_id: str) -> bool:
+    """(Re)build the combined searchable PDF for a document."""
+    row = db.q1("SELECT * FROM documents WHERE id=?", (doc_id,))
+    if not row:
+        return False
+    try:
+        ok = pdfconv.build_combined(row, page_rows(doc_id)) is not None
+    except Exception:
+        log.exception("PDF build failed for %s", doc_id)
+        ok = False
+    if not ok:
+        pdfconv.combined_path(doc_id).unlink(missing_ok=True)
+    db.run("UPDATE documents SET has_pdf=? WHERE id=?", (int(ok), doc_id))
+    return ok
+
+
+def build_pdf_and_sync(doc_id: str) -> None:
+    build_pdf(doc_id)
+    row = db.q1("SELECT user_id FROM documents WHERE id=?", (doc_id,))
+    if row:
+        export.write_master(row["user_id"])
+
+
 def page_rows(doc_id: str):
     return db.q("SELECT * FROM doc_pages WHERE doc_id=? ORDER BY sort, created_at", (doc_id,))
 
@@ -144,6 +173,8 @@ def process_document(doc_id: str, mode: str = "full"):
         return
     path = file_path(row)
     error = None
+    if path is not None:
+        build_pdf(doc_id)
     if path is None:  # manual entry without a file
         db.run("UPDATE documents SET status='ok' WHERE id=? AND status='processing'", (doc_id,))
         return
@@ -168,9 +199,11 @@ def process_document(doc_id: str, mode: str = "full"):
             error = (f"{files_mod.kind_label(row['file_ext'])} file stored safely — CertVault can't read this type, "
                      "so fill in the details (or add a photo/PDF of it as another page).")
             fields = {"category": row["category"] or "other", "title": row["title"]}
+        combined = pdfconv.combined_path(doc_id)
+        ai_files = [(combined, "pdf")] if combined.exists() and (len(files) > 1 or not extract.is_visual(files[0][1])) else files
         if ai.enabled() and readable:
             try:
-                ai_fields, source = ai.analyse(files, text)
+                ai_fields, source = ai.analyse(ai_files, text)
                 ai_text = ai_fields.pop("transcript", None)
                 for k, v in ai_fields.items():
                     if v not in (None, ""):
@@ -531,6 +564,7 @@ def delete_page(doc_id: str, pid: str, user=Depends(security.require_user)):
     page_path(p).unlink(missing_ok=True)
     thumb_path(pid).unlink(missing_ok=True)
     db.run("DELETE FROM doc_pages WHERE id=?", (pid,))
+    worker.submit(build_pdf_and_sync, doc_id)
     return {"ok": True}
 
 
@@ -622,6 +656,7 @@ def delete_document(doc_id: str, request: Request, user=Depends(security.require
         thumb_path(p["id"]).unlink(missing_ok=True)
     if file_path(row):
         file_path(row).unlink(missing_ok=True)
+    pdfconv.combined_path(doc_id).unlink(missing_ok=True)
     thumb_path(doc_id).unlink(missing_ok=True)
     db.run("DELETE FROM documents WHERE id=?", (doc_id,))
     db.log_activity(user["id"], "delete", row["title"], security.client_ip(request))
@@ -713,6 +748,21 @@ def share_zip(ids: str, request: Request, user=Depends(security.require_user)):
                     headers={"Content-Disposition": f'attachment; filename="{fn}"', "Cache-Control": "no-store"})
 
 
+@app.get("/api/share/pack.pdf")
+def share_pack_pdf(ids: str, request: Request, user=Depends(security.require_user)):
+    """Everything in ONE PDF: cover page with a summary table, then each document."""
+    docs = _docs_for(user, ids.split(","))
+    for d in docs:
+        if d["file_ext"] and not pdfconv.combined_path(d["id"]).exists():
+            build_pdf(d["id"])
+    data = share.pack_pdf(user["id"], user["username"], docs)
+    db.run("INSERT INTO shares(user_id, doc_ids, method) VALUES(?,?,?)", (user["id"], ",".join(d["id"] for d in docs), "pdf"))
+    db.log_activity(user["id"], "ticket pack PDF", f"{len(docs)} doc(s)", security.client_ip(request))
+    fn = f"{export.safe_name(db.get_setting(user['id'], 'full_name') or user['username'])} - tickets {date.today():%Y-%m-%d}.pdf"
+    return Response(data, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{fn}"', "Cache-Control": "no-store"})
+
+
 @app.get("/api/share/text")
 def share_text(ids: str, user=Depends(security.require_user)):
     return {"text": share.summary_text(_docs_for(user, ids.split(",")))}
@@ -766,8 +816,12 @@ def naming_apply(request: Request, user=Depends(security.require_user)):
 def share_files(ids: str, user=Depends(security.require_user)):
     """Download URLs + nice names for sharing from the phone."""
     out = []
+    pdf_first = db.get_setting(user["id"], "share_format", "pdf") == "pdf"
     for d in _docs_for(user, ids.split(",")):
         s = naming.settings(user["id"])
+        if pdf_first and pdfconv.combined_path(d["id"]).exists():
+            out.append({"url": f"/api/documents/{d['id']}/pdf", "name": naming.build(d, s, ext="pdf")})
+            continue
         pages = page_rows(d["id"])
         if d["file_ext"]:
             out.append({"url": f"/api/documents/{d['id']}/file", "name": naming.build(d, s, side="Front" if pages else None, ext=d["file_ext"])})
@@ -919,6 +973,16 @@ def get_file(doc_id: str, download: int = 0, user=Depends(security.require_user)
     return _serve(file_path(row), row["file_ext"], row["mime"], naming.build(row, side=side, ext=row["file_ext"]), download)
 
 
+@app.get("/api/documents/{doc_id}/pdf")
+def get_pdf(doc_id: str, download: int = 0, user=Depends(security.require_user)):
+    """The document as ONE searchable PDF (every side/page)."""
+    row = get_doc(doc_id, user)
+    p = pdfconv.combined_path(doc_id)
+    if not p.exists():
+        raise HTTPException(404, "PDF not ready yet")
+    return _serve(p, "pdf", "application/pdf", naming.build(row, ext="pdf"), download)
+
+
 @app.get("/api/documents/{doc_id}/thumb")
 def get_thumb(doc_id: str, user=Depends(security.require_user)):
     row = get_doc(doc_id, user)
@@ -958,7 +1022,7 @@ def master_csv(user=Depends(security.require_user)):
 
 USER_KEYS = ["reminder_days", "remind_expired_weekly", "ntfy_url", "ntfy_token", "email_to", "ha_webhook_url",
              "full_name", "company", "phone", "my_email",
-             "name_tokens", "name_sep", "name_datefmt", "name_case", "name_titles", "library"]
+             "name_tokens", "name_sep", "name_datefmt", "name_case", "name_titles", "library", "share_format", "library_format"]
 GLOBAL_KEYS = ["ai_provider", "anthropic_api_key", "anthropic_model", "ollama_url", "ollama_model",
                "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "notify_hour", "public_url"]
 SECRET_KEYS = {"ntfy_token", "anthropic_api_key", "smtp_pass"}

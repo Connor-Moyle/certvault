@@ -162,7 +162,7 @@ def init() -> None:
     conn.executescript(SCHEMA)
     # migrations
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
-    for col in ("version_group", "classes", "rto_code", "cost", "tags", "required_for", "renewal_info", "ai_text", "renew_months"):
+    for col in ("version_group", "classes", "rto_code", "cost", "tags", "required_for", "renewal_info", "ai_text", "renew_months", "has_pdf"):
         if col not in cols:
             conn.execute(f"ALTER TABLE documents ADD COLUMN {col} TEXT")
     conn.executescript(SCHEMA_V13)

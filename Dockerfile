@@ -7,7 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TMPDIR=/data/tmp
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-osd poppler-utils tzdata \
+ && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-osd poppler-utils qpdf tzdata \
+      libreoffice-writer-nogui libreoffice-calc-nogui libreoffice-impress-nogui fonts-dejavu-core fonts-liberation2 \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

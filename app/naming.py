@@ -27,7 +27,7 @@ TOKENS = {
     "status":    "Status (CURRENT / EXPIRED)",
 }
 DEFAULT = {"name_tokens": "holder,type,expiry", "name_sep": " - ", "name_datefmt": "iso", "name_case": "as-is",
-           "name_titles": "0", "library": "1"}
+           "name_titles": "0", "library": "1", "library_format": "pdf"}
 SEPARATORS = {" - ": "Name - Type - Date", "_": "Name_Type_Date", " ": "Name Type Date", " · ": "Name · Type · Date"}
 DATEFMTS = {"iso": ("2028-03-14", "%Y-%m-%d"), "au": ("14-03-2028", "%d-%m-%Y"), "long": ("14 Mar 2028", "%-d %b %Y"),
             "month": ("Mar 2028", "%b %Y")}
@@ -137,9 +137,13 @@ def write_library(user_id: int) -> None:
     for d in db.q("SELECT * FROM documents WHERE user_id=? AND file_ext IS NOT NULL", (user_id,)):
         cat = CATEGORY_BY_ID.get(d["category"] or "other", CATEGORY_BY_ID["other"])
         folder = root / _clean(KINDS[cat["kind"]]["name"]) / _clean(cat["name"])
-        pages = db.q("SELECT * FROM doc_pages WHERE doc_id=? ORDER BY sort, created_at", (d["id"],))
-        items = [(config.FILES_DIR / f"{d['id']}.{d['file_ext']}", d["file_ext"], "Front" if pages else None)]
-        items += [(config.FILES_DIR / f"{p['id']}.{p['file_ext']}", p["file_ext"], p["label"] or "Page") for p in pages]
+        combined = config.FILES_DIR / f"{d['id']}.combined.pdf"
+        if s.get("library_format", "pdf") == "pdf" and combined.exists():
+            items = [(combined, "pdf", None)]
+        else:
+            pages = db.q("SELECT * FROM doc_pages WHERE doc_id=? ORDER BY sort, created_at", (d["id"],))
+            items = [(config.FILES_DIR / f"{d['id']}.{d['file_ext']}", d["file_ext"], "Front" if pages else None)]
+            items += [(config.FILES_DIR / f"{p['id']}.{p['file_ext']}", p["file_ext"], p["label"] or "Page") for p in pages]
         for src, ext, side in items:
             if not src.exists():
                 continue

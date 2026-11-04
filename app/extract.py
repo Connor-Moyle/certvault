@@ -191,6 +191,23 @@ def _otsu(a) -> float:
     return thr
 
 
+def deskew_angle(g: Image.Image) -> float:
+    """Tilt of a photo in degrees (±15), 0 if straight."""
+    import numpy as np
+    small = g.copy()
+    small.thumbnail((900, 900))
+    ink = 255 - np.asarray(_adaptive(small), dtype=np.uint8)
+    ink_img = Image.fromarray(ink)
+
+    def score(angle):
+        r = np.asarray(ink_img.rotate(angle, resample=Image.BILINEAR, fillcolor=0), dtype=np.float32)
+        return float(np.var(r.sum(axis=1)))
+
+    best = max(range(-15, 16, 1), key=score)
+    fine = max([best + d / 4 for d in range(-4, 5)], key=score)
+    return 0.0 if abs(fine) < 0.3 else fine
+
+
 def _deskew(g: Image.Image) -> Image.Image:
     """Straighten a slightly tilted photo (±15°) using the row-projection method."""
     import numpy as np

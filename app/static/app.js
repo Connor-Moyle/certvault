@@ -471,6 +471,7 @@ async function viewDoc(id) {
     <a role="menuitem" href="#/doc/${d.id}/edit">${icon("edit")}<span>Edit details</span></a>
     <button role="menuitem" data-m="rescan">${icon(S.me.ai_enabled ? "star_shine" : "refresh")}<span>${S.me.ai_enabled ? "Re-read with AI" : "Re-read"}</span></button>
     ${d.expiry_date ? `<a role="menuitem" href="/api/calendar.ics?ids=${d.id}">${icon("calendar_add_on")}<span>Add to my calendar</span></a>` : ""}
+    ${d.has_pdf ? `<a role="menuitem" href="/api/documents/${d.id}/pdf?download=1">${icon("picture_as_pdf")}<span>Download as one PDF</span></a>` : ""}
     <a role="menuitem" href="/api/share/zip?ids=${d.id}">${icon("folder_zip")}<span>Download all sides (ZIP)</span></a>
     ${d.versions > 1 || d.version_group === "solo" ? `<button role="menuitem" data-m="solo">${icon("category")}<span>${d.version_group === "solo" ? "Group with same-name copies" : "Not a renewal — keep separate"}</span></button>` : ""}
     <div class="menu-div"></div>
@@ -514,6 +515,7 @@ async function viewDoc(id) {
   </div>
   <div class="btn-row">
     <button class="btn filled" id="share2">${icon("share")}Share</button>
+    ${d.has_pdf ? `<a class="btn tonal" href="/api/documents/${d.id}/pdf" target="_blank" rel="noopener">${icon("picture_as_pdf")}PDF</a>` : ""}
     ${d.has_file ? `<a class="btn outlined" href="/api/documents/${d.id}/file?download=1">${icon("download")}Download</a>` : ""}
     ${d.expiry_date ? `<a class="btn outlined" href="/api/calendar.ics?ids=${d.id}">${icon("calendar_add_on")}Calendar</a>` : ""}
   </div>`;
@@ -594,6 +596,7 @@ async function shareSheet(docs) {
     <div class="share-opts">
       <button class="share-opt" id="sh-phone" ${canPhone ? "" : "disabled"}>${icon("share")}<span>Phone apps</span><small>${canPhone ? "WhatsApp, Gmail, Messages…" : "Needs HTTPS (see README)"}</small></button>
       <button class="share-opt" id="sh-mail">${icon("mail")}<span>Email it</span><small>Sent from CertVault with files attached</small></button>
+      <a class="share-opt" id="sh-pdf" href="/api/share/pack.pdf?ids=${ids.join(",")}">${icon("picture_as_pdf")}<span>One PDF</span><small>Cover summary + every document</small></a>
       <a class="share-opt" id="sh-zip" href="/api/share/zip?ids=${ids.join(",")}">${icon("folder_zip")}<span>Ticket pack</span><small>ZIP of files + summary</small></a>
       <button class="share-opt" id="sh-copy">${icon("content_copy")}<span>Copy details</span><small>Paste into any message</small></button>
     </div>
@@ -619,6 +622,7 @@ async function shareSheet(docs) {
     } catch (err) { snack(err.message, 7000); btn.disabled = false; btn.innerHTML = `${icon("send")}Send`; }
   });
   $("#sh-zip", dl).addEventListener("click", () => setTimeout(() => dl.close(), 300));
+  $("#sh-pdf", dl).addEventListener("click", () => { snack("Building PDF…"); setTimeout(() => dl.close(), 300); });
   $("#sh-copy", dl).addEventListener("click", async () => {
     const { text } = await api(`/api/share/text?ids=${ids.join(",")}`);
     copyText(text); snack("Details copied — paste them into any message");
@@ -822,6 +826,7 @@ async function viewSettings() {
     <div class="field"><label>Letter case</label><select id="ncase">${[["as-is", "As written"], ["title", "Title Case"], ["upper", "UPPER CASE"], ["lower", "lower case"]].map(([k, l]) => `<option value="${k}" ${k === nm.current.name_case ? "selected" : ""}>${l}</option>`).join("")}</select></div>
     <div class="name-preview" id="nprev"></div>
     <div class="switch-row"><div class="body">Also rename document titles<div class="s">New uploads get titled with this pattern too</div></div><input type="checkbox" class="switch" id="ntitles" ${nm.current.name_titles === "1" ? "checked" : ""}></div>
+    <div class="field"><label>Send & save documents as</label><select id="nfmt"><option value="pdf" ${(st.user.share_format || "pdf") === "pdf" ? "selected" : ""}>PDF — one searchable PDF per document (recommended)</option><option value="original" ${st.user.share_format === "original" ? "selected" : ""}>Original files (photos, Word, Excel…)</option></select></div>
     <div class="switch-row"><div class="body">Keep a neatly named copy on the NAS<div class="s">Folder <code>library</code> in the CertVault dataset, sorted by group and type — no extra space used</div></div><input type="checkbox" class="switch" id="nlib" ${nm.current.library === "1" ? "checked" : ""}></div>
     <div class="btn-row end"><button class="btn text" id="napply">Rename all titles now</button><button class="btn filled" id="nsave">Save</button></div></div></div>`;
   html += `<div class="section-title">Notifications</div><div class="card"><div class="form flush">
@@ -907,7 +912,7 @@ async function viewSettings() {
   ["#nsep", "#ndate", "#ncase"].forEach((sel) => $(sel).addEventListener("change", drawNaming));
   drawNaming();
   $("#nsave").addEventListener("click", async () => {
-    try { await saveUser({ ...nmVals(), name_titles: $("#ntitles").checked ? "1" : "0", library: $("#nlib").checked ? "1" : "0" }); snack("Naming saved — NAS copy updating"); } catch (e) { snack(e.message); }
+    try { await saveUser({ ...nmVals(), name_titles: $("#ntitles").checked ? "1" : "0", library: $("#nlib").checked ? "1" : "0", share_format: $("#nfmt").value, library_format: $("#nfmt").value }); snack("Saved — NAS copy updating"); } catch (e) { snack(e.message); }
   });
   $("#napply").addEventListener("click", async () => {
     if (!(await confirmDlg("Rename every title?", "All your document titles will be replaced using this naming pattern. You can still edit any title afterwards.", "Rename all", false))) return;
