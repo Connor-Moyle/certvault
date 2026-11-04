@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f9f9ff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111318" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>CertVault</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="stylesheet" href="/static/app.css?v=1">
+  <script src="/static/theme.js?v=1"></script>
+</head>
+<body>
+  <div id="app"><div class="center"><div class="spinner"></div></div></div>
+  <nav class="navbar hidden" id="nav">
+    <div class="inner">
+      <a class="nav-item" href="#/" data-nav="home"><span class="pill"><svg class="icon"><use href="/static/icons.svg#home"/></svg></span>Home</a>
+      <a class="nav-item" href="#/all" data-nav="all"><span class="pill"><svg class="icon"><use href="/static/icons.svg#description"/></svg></span>Documents</a>
+      <a class="nav-item" href="#/settings" data-nav="settings"><span class="pill"><svg class="icon"><use href="/static/icons.svg#settings"/></svg></span>Settings</a>
+    </div>
+  </nav>
+  <button class="fab hidden" id="fab" type="button"><svg class="icon"><use href="/static/icons.svg#add"/></svg><span>Add</span></button>
+  <div id="snack" role="status" aria-live="polite"></div>
+  <dialog id="dlg"></dialog>
+  <script src="/static/app.js?v=1"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+argon2-cffi==23.1.0
+pyotp==2.9.0
+qrcode[pil]==8.0
+pillow==11.1.0
+pillow-heif==0.21.0
+pytesseract==0.3.13
+httpx==0.28.1

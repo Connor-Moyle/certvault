@@ -1,0 +1,23 @@
+# Alternative: build from source on the NAS (no GitHub image needed)
+#   git clone https://github.com/Connor-Moyle/certvault.git && cd certvault
+#   sudo docker compose -f docker-compose.build.yml up -d --build
+services:
+  certvault:
+    build: .
+    image: certvault:local
+    container_name: certvault
+    restart: unless-stopped
+    ports:
+      - "30090:8080"
+    environment:
+      TZ: Australia/Perth
+    volumes:
+      - /mnt/CME_Nas/certvault:/data
+    user: "568:568"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

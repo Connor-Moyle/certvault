@@ -1,0 +1,22 @@
+# CertVault — paste into TrueNAS: Apps → Discover Apps → ⋮ → Install via YAML
+# Change the dataset path on the left of /data if yours differs.
+services:
+  certvault:
+    image: ghcr.io/connor-moyle/certvault:latest
+    container_name: certvault
+    restart: unless-stopped
+    ports:
+      - "30090:8080"
+    environment:
+      TZ: Australia/Perth
+      # CV_COOKIE_SECURE: "true"   # uncomment if you only ever open it over HTTPS
+    volumes:
+      - /mnt/CME_Nas/certvault:/data
+    user: "568:568"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
