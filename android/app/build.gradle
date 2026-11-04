@@ -1,0 +1,50 @@
+plugins {
+    id 'com.android.application'
+}
+
+def runNumber = (System.getenv('GITHUB_RUN_NUMBER') ?: '1') as int
+
+android {
+    namespace 'au.cme.certvault'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'au.cme.certvault'
+        minSdk 26
+        targetSdk 34
+        versionCode runNumber
+        versionName "1.0.${runNumber}"
+    }
+
+    // Signing key comes from the CI environment (GitHub secrets, or a throwaway key the workflow creates).
+    // It is never stored in this repository.
+    def ks = System.getenv('CV_KEYSTORE')
+    if (ks) {
+        signingConfigs {
+            release {
+                storeFile file(ks)
+                storePassword System.getenv('CV_KEYSTORE_PASS')
+                keyAlias System.getenv('CV_KEY_ALIAS')
+                keyPassword System.getenv('CV_KEY_PASS')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (ks) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.work:work-runtime:2.9.1'
+}

@@ -277,7 +277,7 @@ function viewAdd() {
     <div class="upload-actions three">
       <label class="btn tonal">${icon("photo_camera")}Take photo<input type="file" accept="image/*" capture="environment" class="hidden" id="cam"></label>
       <label class="btn tonal">${icon("upload_file")}Choose files<input type="file" multiple class="hidden" id="pick"></label>
-      <label class="btn tonal">${icon("folder_open")}Import folder<input type="file" webkitdirectory directory multiple class="hidden" id="folder"></label>
+      ${window.CertVaultAndroid ? `<label class="btn tonal">${icon("folder_zip")}Import ZIP<input type="file" accept=".zip,application/zip" class="hidden" id="folder"></label>` : `<label class="btn tonal">${icon("folder_open")}Import folder<input type="file" webkitdirectory directory multiple class="hidden" id="folder"></label>`}
     </div>
     <button class="btn outlined manual-btn" id="manual">${icon("note_add")}Add something without a file<span>service due, subscription, BAS, anything with a date</span></button>
     <div class="card"><div class="switch-row"><div class="body"><b>Front &amp; back of one card</b><div class="s">Photos you take or pick become the sides/pages of ONE document</div></div><input type="checkbox" class="switch" id="group" ${S.groupMode ? "checked" : ""}></div>
@@ -593,12 +593,13 @@ async function shareSheet(docs) {
   const ids = docs.map((x) => x.id);
   const one = docs.length === 1;
   const name = one ? `“${docs[0].title}”` : `${docs.length} documents`;
-  const canPhone = !!(navigator.canShare && window.isSecureContext);
+  const APP = window.CertVaultAndroid;
+  const canPhone = !!APP || !!(navigator.canShare && window.isSecureContext);
   let recent = [];
   try { recent = await api("/api/share/recent"); } catch (e) { /* ignore */ }
   const dl = dialog(`<h2>Share ${esc(name)}</h2>
     <div class="share-opts">
-      <button class="share-opt" id="sh-phone" ${canPhone ? "" : "disabled"}>${icon("share")}<span>Phone apps</span><small>${canPhone ? "WhatsApp, Gmail, Messages…" : "Needs HTTPS (see README)"}</small></button>
+      <button class="share-opt" id="sh-phone" ${canPhone ? "" : "disabled"}>${icon("share")}<span>Phone apps</span><small>${canPhone ? "WhatsApp, Gmail, Messages…" : "Use the Android app, or HTTPS"}</small></button>
       <button class="share-opt" id="sh-mail">${icon("mail")}<span>Email it</span><small>Sent from CertVault with files attached</small></button>
       <a class="share-opt" id="sh-pdf" href="/api/share/pack.pdf?ids=${ids.join(",")}">${icon("picture_as_pdf")}<span>One PDF</span><small>Cover summary + every document</small></a>
       <a class="share-opt" id="sh-zip" href="/api/share/zip?ids=${ids.join(",")}">${icon("folder_zip")}<span>Ticket pack</span><small>ZIP of files + summary</small></a>
@@ -634,6 +635,15 @@ async function shareSheet(docs) {
     dl.close();
   });
   $("#sh-phone", dl).addEventListener("click", async () => {
+    if (APP) {
+      try {
+        const [{ text }, list] = await Promise.all([api(`/api/share/text?ids=${ids.join(",")}`), api(`/api/share/files?ids=${ids.join(",")}`)]);
+        APP.shareFiles(JSON.stringify(list), text, one ? docs[0].title : "Licences & tickets");
+        api("/api/share/log", { method: "POST", body: { ids, method: "phone" } }).catch(() => {});
+        dl.close();
+      } catch (err) { snack(err.message); }
+      return;
+    }
     try {
       snack("Preparing files…");
       const { text } = await api(`/api/share/text?ids=${ids.join(",")}`);
@@ -1013,6 +1023,9 @@ async function viewSettings() {
       ${field("g", "public_url", "Link to this app (for notification taps)", { ph: "http://192.168.0.50:30090" })}
       <div class="btn-row end"><button class="btn filled" id="saveg">Save</button></div></div></div>`;
   }
+  html += window.CertVaultAndroid
+    ? `<div class="section-title">Android app</div><div class="list gap"><div class="item" id="appsrv"><div class="lead c-green">${icon("android")}</div><div class="body"><div class="h">Server address</div><div class="s">${esc(window.CertVaultAndroid.serverUrl())} · app v${esc(window.CertVaultAndroid.version())}</div></div></div></div>`
+    : `<div class="section-title">Android app</div><div class="list gap"><a class="item" href="https://github.com/Connor-Moyle/certvault/releases/latest/download/CertVault.apk"><div class="lead c-green">${icon("android")}</div><div class="body"><div class="h">Get the Android app</div><div class="s">Native sharing, open PDFs, "Share to CertVault" from any app, reminders — download the APK</div></div></a></div>`;
   html += `<div class="section-title">Appearance</div><div class="card"><div class="form flush">
     <div class="seg" id="theme">${[["system", "System"], ["light", "Light"], ["dark", "Dark"]].map(([k, l]) => `<button type="button" data-t="${k}" class="${theme === k ? "on" : ""}">${esc(l)}</button>`).join("")}</div>
     <div class="swatches" id="acc">${["blue", "green", "teal", "purple", "orange"].map((a) => `<button type="button" class="swatch ${a} ${accent === a ? "on" : ""}" data-a="${a}" aria-label="${a}">${icon("check")}</button>`).join("")}</div>
@@ -1073,6 +1086,7 @@ async function viewSettings() {
     await saveUser({ ...nmVals() });
     const r = await api("/api/naming/apply-titles", { method: "POST" }); await loadDocs(); snack(`${r.renamed} titles renamed`);
   });
+  $("#appsrv") && $("#appsrv").addEventListener("click", () => window.CertVaultAndroid.changeServer());
   $("#savep").addEventListener("click", async (e) => { try { await saveUser(collect("u", e.target.closest(".card"))); snack("Saved"); } catch (er) { snack(er.message); } });
   $("#act").addEventListener("click", async () => {
     const rows = await api("/api/activity");

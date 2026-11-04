@@ -1,0 +1,70 @@
+name: Android app
+
+on:
+  push:
+    branches: [main]
+    paths: ["android/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Signing key (your secret, or a throwaway one)
+        env:
+          KS_B64: ${{ secrets.CV_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.CV_KEYSTORE_PASS }}
+          KS_ALIAS: ${{ secrets.CV_KEY_ALIAS }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            { echo "CV_KEYSTORE=$RUNNER_TEMP/release.keystore"; echo "CV_KEYSTORE_PASS=$KS_PASS"; echo "CV_KEY_PASS=$KS_PASS"; echo "CV_KEY_ALIAS=$KS_ALIAS"; } >> "$GITHUB_ENV"
+            echo "Signing with your key from secrets"
+          else
+            P=$(openssl rand -hex 16); echo "::add-mask::$P"
+            keytool -genkeypair -keystore "$RUNNER_TEMP/tmp.keystore" -storepass "$P" -keypass "$P" -alias tmp \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=CertVault build" >/dev/null 2>&1
+            { echo "CV_KEYSTORE=$RUNNER_TEMP/tmp.keystore"; echo "CV_KEYSTORE_PASS=$P"; echo "CV_KEY_PASS=$P"; echo "CV_KEY_ALIAS=tmp"; } >> "$GITHUB_ENV"
+            echo "::warning::No CV_KEYSTORE_B64 secret — signed with a throwaway key, so installing a newer build means uninstalling the old one first."
+          fi
+      - name: Build APK
+        working-directory: android
+        run: |
+          set +e
+          gradle assembleRelease --no-daemon --stacktrace > build.log 2>&1
+          status=$?
+          tail -60 build.log
+          if [ $status -ne 0 ]; then
+            grep -E "error:|e: |What went wrong|Could not|\.java:[0-9]+|AAPT|not found|Execution failed" build.log \
+              | head -40 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
+            exit $status
+          fi
+      - name: Collect APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk CertVault.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CertVault-apk
+          path: CertVault.apk
+      - name: Publish to the "android-latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: CertVault for Android (latest build)
+          make_latest: true
+          files: CertVault.apk
+          body: |
+            **Install:** open this page on your phone, tap **CertVault.apk**, then *Install* (allow "install unknown apps" for your browser the first time).
+            On first launch enter your CertVault address, e.g. `http://192.168.0.50:30090` (or your Tailscale address).
+
+            Built automatically from `main` — run #${{ github.run_number }}.

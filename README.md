@@ -96,6 +96,20 @@ It creates the `CME_Nas/certvault` dataset, installs the app on port 30090 and p
 ### Updating
 TrueNAS: **Apps → certvault → Update** (or *Edit → Save* to re-pull `:latest`). Your data in the dataset is kept.
 
+## Android app
+
+Get it from **[Releases → CertVault.apk](https://github.com/Connor-Moyle/certvault/releases/latest/download/CertVault.apk)**. Open that link on your phone, then tap *Install*. The first time, allow "install unknown apps" for your browser. Every push to `android/` builds a new APK automatically.
+
+When you first open it, enter your server address, e.g. `http://192.168.0.50:30090` (or your Tailscale address). What the app adds over the browser:
+
+- **Real share sheet**: WhatsApp, Gmail, Messages and so on get the actual PDF files. This works over plain HTTP, no HTTPS needed.
+- **"Save to CertVault"** appears in every app's share menu (Gmail attachments, Files, Photos, Drive…) and uploads straight in.
+- **Camera and file picking** for uploads, PDFs open in your PDF viewer, and downloads are saved to `Downloads/CertVault`.
+- **Reminders on the phone itself.** It checks twice a day and shows one notification when something is expired or due within 30 days. ntfy and email still work too.
+- A themed icon that matches Material You.
+
+**Signing:** app updates only install over the top if every build is signed with the same key. Add your key once as repository secrets (*Settings → Secrets and variables → Actions*): `CV_KEYSTORE_B64` (the keystore, base64-encoded), `CV_KEYSTORE_PASS` and `CV_KEY_ALIAS`. Until you do, each build uses a throwaway key, and you'll need to uninstall before installing a newer build. Keys are never stored in this repository.
+
 ## Set up AI autofill
 
 **Settings → AI document reading** (admin only):

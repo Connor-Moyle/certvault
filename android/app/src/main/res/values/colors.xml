@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="surface">#F9F9FF</color>
+    <color name="primary">#415F91</color>
+    <color name="icon_bg">#D6E3FF</color>
+    <color name="icon_fg">#001B3E</color>
+</resources>
