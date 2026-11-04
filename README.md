@@ -32,6 +32,14 @@ Upload a photo or PDF. **AI reads the file and fills in the details**: type, who
 
 ## Install on TrueNAS SCALE (25.x)
 
+**Quickest:** open **System → Shell** in TrueNAS and paste:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Connor-Moyle/certvault/main/install-truenas.sh | sudo bash
+```
+It creates the `CME_Nas/certvault` dataset, installs the app on port 30090 and prints your setup code.
+
+**Manual:**
+
 1. **Create a dataset** for the data, e.g. `CME_Nas/certvault`. Give the `apps` user (568) full control.
    From a shell:
    ```bash
