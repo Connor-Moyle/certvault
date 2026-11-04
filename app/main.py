@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from . import files as files_mod
 from . import pdfconv
+from . import folders
 from . import ai, config, db, export, extract, files, naming, notify, scheduler, security, share, versions
 from .categories import CATEGORIES, CATEGORY_BY_ID, KINDS, is_register, kind_of
 
@@ -27,7 +28,7 @@ logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(
 log = logging.getLogger("certvault")
 
 STATIC = Path(__file__).parent / "static"
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 
 app = FastAPI(title="CertVault", docs_url=None, redoc_url=None, openapi_url=None)
 worker = ThreadPoolExecutor(max_workers=1)  # one document at a time — gentle on the NAS
@@ -41,6 +42,7 @@ SETUP_CODE: str | None = None
 def startup():
     global SETUP_CODE
     db.init()
+    folders.init()
     if not db.q1("SELECT 1 FROM users"):
         SETUP_CODE = secrets.token_hex(4).upper()
         (config.DATA_DIR / "SETUP_CODE.txt").write_text(SETUP_CODE + "\n")
@@ -61,6 +63,12 @@ def startup():
         worker.submit(process_document, r["id"], "full")
     for u in db.q("SELECT id FROM users"):
         export.write_master(u["id"])
+    # file documents into folders (organisations, Medicals, Gov docs)
+    for r in db.q("SELECT id FROM documents WHERE status<>'processing'"):
+        try:
+            folders.auto_assign(r["id"])
+        except Exception:
+            log.exception("auto folder failed")
     # make PDFs for documents uploaded before v1.6
     for r in db.q("SELECT id FROM documents WHERE file_ext IS NOT NULL AND COALESCE(has_pdf,'0') IN ('0', 0) "
                   "AND status<>'processing'"):
@@ -233,6 +241,10 @@ def process_document(doc_id: str, mode: str = "full"):
         vals += [source, error, new_status, ai_text, doc_id]
         db.run(f"UPDATE documents SET {', '.join(sets)} WHERE id=?", vals)
         log.info("Processed %s via %s", doc_id, source)
+        try:
+            folders.auto_assign(doc_id)
+        except Exception:
+            log.exception("auto folder failed")
         if naming.settings(row["user_id"]).get("name_titles") == "1":
             fresh = db.q1("SELECT * FROM documents WHERE id=?", (doc_id,))
             db.run("UPDATE documents SET title=? WHERE id=?", (naming.build(fresh), doc_id))
@@ -394,7 +406,11 @@ def categories(user=Depends(security.require_user)):
 def list_documents(user=Depends(security.require_user)):
     rows = db.q("SELECT * FROM documents WHERE user_id=? ORDER BY "
                 "CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date, created_at DESC", (user["id"],))
-    return versions.annotate([doc_state(r) for r in rows])
+    fm = folders.doc_folder_ids(user["id"])
+    out = versions.annotate([doc_state(r) for r in rows])
+    for d in out:
+        d["folders"] = fm.get(d["id"], [])
+    return out
 
 
 async def _read_upload(f: UploadFile) -> list[files.Stored]:
@@ -580,6 +596,9 @@ def get_document(doc_id: str, user=Depends(security.require_user)):
                     for x in versions.group_of(alld, doc_id)]
     d["pages"] = [{k: p[k] for k in ("id", "label", "file_ext", "has_thumb", "size", "original_name")}
                   for p in page_rows(doc_id)]
+    d["folders"] = [dict(r) for r in db.q(
+        "SELECT c.id, c.name, c.icon, c.color, dc.auto FROM doc_collections dc JOIN collections c ON c.id=dc.collection_id "
+        "WHERE dc.doc_id=? AND dc.excluded=0 ORDER BY c.name", (doc_id,))]
     d["shares"] = [dict(r) for r in db.q(
         "SELECT method, recipient, created_at FROM shares WHERE user_id=? AND (',' || doc_ids || ',') LIKE ? "
         "ORDER BY id DESC LIMIT 20", (user["id"], f"%,{doc_id},%"))]
@@ -777,6 +796,116 @@ def share_recent(user=Depends(security.require_user)):
             if e not in seen:
                 seen.append(e)
     return seen[:8]
+
+
+# ---- folders (organisations / groups) ---------------------------------------------------------
+
+def _folder_summary(user, c, today, old, docs_by_id, links) -> dict:
+    ids = [i for i in links.get(c["id"], []) if i in docs_by_id and i not in old]
+    states = [folders._state(docs_by_id[i], today) for i in ids]
+    chk = folders.checklist(user["id"], c["id"], today, old)
+    return {**dict(c), "count": len(ids), "expired": states.count("expired"), "soon": states.count("soon"),
+            "requirements": [x for x in (c["requirements"] or "").split(",") if x],
+            "ready": sum(1 for x in chk if x["state"] in ("valid", "none")), "required": len(chk),
+            "missing": sum(1 for x in chk if x["state"] == "missing")}
+
+
+@app.get("/api/folders")
+def list_folders(user=Depends(security.require_user)):
+    today = scheduler.today_local()
+    all_docs = db.q("SELECT * FROM documents WHERE user_id=?", (user["id"],))
+    old = versions.superseded_ids(all_docs)
+    by_id = {d["id"]: d for d in all_docs}
+    links: dict[int, list[str]] = {}
+    for r in db.q("SELECT dc.collection_id, dc.doc_id FROM doc_collections dc JOIN collections c ON c.id=dc.collection_id "
+                  "WHERE c.user_id=? AND dc.excluded=0", (user["id"],)):
+        links.setdefault(r["collection_id"], []).append(r["doc_id"])
+    cols = db.q("SELECT * FROM collections WHERE user_id=? ORDER BY ctype DESC, name", (user["id"],))
+    return [_folder_summary(user, c, today, old, by_id, links) for c in cols]
+
+
+@app.get("/api/folders/{cid}")
+def get_folder(cid: int, user=Depends(security.require_user)):
+    c = db.q1("SELECT * FROM collections WHERE id=? AND user_id=?", (cid, user["id"]))
+    if not c:
+        raise HTTPException(404)
+    today = scheduler.today_local()
+    all_docs = db.q("SELECT * FROM documents WHERE user_id=?", (user["id"],))
+    old = versions.superseded_ids(all_docs)
+    ids = [r["doc_id"] for r in db.q("SELECT doc_id FROM doc_collections WHERE collection_id=? AND excluded=0", (cid,))]
+    out = _folder_summary(user, c, today, old, {d["id"]: d for d in all_docs}, {cid: ids})
+    out["doc_ids"] = ids
+    out["checklist"] = folders.checklist(user["id"], cid, today, old)
+    sector = folders.ORG_SECTOR.get(c["name"])
+    out["suggested"] = folders.SUGGESTED.get(sector) or (folders.SUGGESTED["mining"] if c["ctype"] == "org" else [])
+    return out
+
+
+class FolderIn(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=80)
+    icon: str | None = Field(None, max_length=40)
+    color: str | None = Field(None, max_length=20)
+    requirements: list[str] | None = None
+    notes: str | None = Field(None, max_length=2000)
+
+
+@app.post("/api/folders")
+def create_folder(body: FolderIn, user=Depends(security.require_user)):
+    if not body.name:
+        raise HTTPException(400, "Give the folder a name")
+    if db.q1("SELECT 1 FROM collections WHERE user_id=? AND name=?", (user["id"], body.name.strip())):
+        raise HTTPException(400, "A folder with that name already exists")
+    reqs = ",".join(r for r in (body.requirements or []) if r in CATEGORY_BY_ID)
+    cid = db.run("INSERT INTO collections(user_id, name, icon, color, ctype, requirements, notes) VALUES(?,?,?,?,'custom',?,?)",
+                 (user["id"], body.name.strip(), body.icon or "folder_open", body.color or "blue", reqs or None, body.notes))
+    return {"id": cid}
+
+
+@app.patch("/api/folders/{cid}")
+def update_folder(cid: int, body: FolderIn, user=Depends(security.require_user)):
+    if not db.q1("SELECT 1 FROM collections WHERE id=? AND user_id=?", (cid, user["id"])):
+        raise HTTPException(404)
+    data = body.model_dump(exclude_unset=True)
+    if "requirements" in data:
+        data["requirements"] = ",".join(r for r in (data["requirements"] or []) if r in CATEGORY_BY_ID) or None
+    if "name" in data and data["name"]:
+        data["name"] = data["name"].strip()
+    if data:
+        db.run(f"UPDATE collections SET {', '.join(f'{k}=?' for k in data)} WHERE id=?", (*data.values(), cid))
+    export.write_master(user["id"])
+    return {"ok": True}
+
+
+@app.delete("/api/folders/{cid}")
+def delete_folder(cid: int, user=Depends(security.require_user)):
+    c = db.q1("SELECT * FROM collections WHERE id=? AND user_id=?", (cid, user["id"]))
+    if not c:
+        raise HTTPException(404)
+    db.run("DELETE FROM collections WHERE id=?", (cid,))
+    if c["auto_key"]:  # don't let auto-filing recreate it
+        db.set_setting(user["id"], "auto_folders_blocked", ",".join(filter(None, [db.get_setting(user["id"], "auto_folders_blocked"), c["auto_key"]])))
+    export.write_master(user["id"])
+    return {"ok": True}
+
+
+class FolderDocsIn(BaseModel):
+    add: list[str] = []
+    remove: list[str] = []
+
+
+@app.post("/api/folders/{cid}/docs")
+def folder_docs(cid: int, body: FolderDocsIn, user=Depends(security.require_user)):
+    if not db.q1("SELECT 1 FROM collections WHERE id=? AND user_id=?", (cid, user["id"])):
+        raise HTTPException(404)
+    if body.add:
+        _docs_for(user, body.add)
+    for did in body.add:
+        db.run("INSERT INTO doc_collections(doc_id, collection_id, auto, excluded) VALUES(?,?,0,0) "
+               "ON CONFLICT(doc_id, collection_id) DO UPDATE SET excluded=0, auto=0", (did, cid))
+    for did in body.remove:
+        db.run("UPDATE doc_collections SET excluded=1 WHERE doc_id=? AND collection_id=?", (did, cid))
+    export.write_master(user["id"])
+    return {"ok": True}
 
 
 # ---- file naming -------------------------------------------------------------------------------

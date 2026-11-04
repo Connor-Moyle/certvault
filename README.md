@@ -21,6 +21,16 @@ Upload a photo or PDF. **AI reads the file and fills in the details**: type, who
 - **Import a whole folder.** Tap **Import folder** (or drag a folder onto the page on a PC). Every PDF, photo and register spreadsheet inside, including sub-folders, is uploaded in batches. Duplicates are skipped and non-cert files ignored.
 - **Registers.** Rigging gear, height safety gear, test & tag, plant/equipment and other registers, as PDF, photo or **Excel/CSV**. The last inspection date and the earliest *next inspection due* date are pulled out, and reminders say "inspection due" instead of "expires".
 - **Renewals / previous versions.** Upload a renewed ticket and it's grouped with the older copies of the same cert. Only the newest sends reminders. The ⋮ menu on a document shows **Previous / expired versions**, and you can mark one *Not a renewal — keep separate*.
+- **Everything becomes a searchable PDF.**
+  - Every document gets one combined PDF of all its sides and pages: photos and scans get an invisible OCR text layer, and Word/Excel/PowerPoint/text/emails are converted with LibreOffice.
+  - Your originals are always kept too.
+  - Sharing, email, ZIP packs and the NAS library use the PDF by default, so the person you send it to can open it on anything. You can switch to originals in *Settings → File naming*.
+  - **One PDF ticket pack:** a cover page summary table, then every selected document, in one file. It's on the share sheet and in each folder.
+- **Folders: organisations & groups.**
+  - *Western Power, South32, Telstra, BHP, Rio Tinto, Alcoa, Woodside, NBN, Amplitel, Indara, FEC…* folders are created and filled automatically when a document mentions them.
+  - *Medicals* and *Government docs* are filled automatically too, and you can make your own.
+  - Give a folder the tickets that client requires and it shows a **ready / expiring / missing checklist** (e.g. "Western Power: 4 of 7 ready, rescue missing"). One tap sends everything they need.
+  - The NAS library also has a `By folder` view.
 - **More than certs.** Document types are grouped into *Tickets & licences*, *Registers*, *Insurance* (public liability / certificate of currency, workers comp, income protection, PI, vehicle, tools, home), *Vehicles* (rego, servicing, inspections), *Business* (ABN, contracts, client/supplier onboarding, SWMS), *Personal ID* (passport, other ID), *Warranties & equipment* (warranties, receipts, calibration certs, fire extinguisher service, memberships) and *Work medicals*. Labels change to suit each one, e.g. *Insurer / Policy number / Renewal date*.
 - **Add without a file.** Track a service, subscription, BAS or anything with a date. Attach a file later if you want.
 - **Mark renewed / done.** One tap rolls the due date forward by its renewal period (e.g. rego +12 months, service +6). It counts from the old due date, so you don't lose days.

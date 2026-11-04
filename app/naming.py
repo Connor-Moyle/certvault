@@ -154,6 +154,15 @@ def write_library(user_id: int) -> None:
                 dst = folder / f"{Path(name).stem} ({n}){Path(name).suffix}"
                 n += 1
             want[dst] = src
+            # also file it under each folder it belongs to (Western Power, Medicals …)
+            try:
+                for fr in db.q("SELECT c.name FROM doc_collections dc JOIN collections c ON c.id=dc.collection_id "
+                               "WHERE dc.doc_id=? AND dc.excluded=0", (d["id"],)):
+                    fdst = root / "By folder" / _clean(fr["name"]) / dst.name
+                    if fdst not in want:
+                        want[fdst] = src
+            except Exception:
+                pass
     # sync: add missing / changed, remove stale
     for dst, src in want.items():
         dst.parent.mkdir(parents=True, exist_ok=True)

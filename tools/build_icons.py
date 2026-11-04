@@ -15,7 +15,7 @@ fact_check fact_check-fill inventory_2 table_view list_alt list_alt-fill checkli
 share flip calendar_add_on folder_zip work autorenew payments sell content_copy check_box check_box_outline_blank select_check_box verified_user deselect person_book
 shield health_and_safety umbrella car_crash car_repair minor_crash build_circle business_center handshake contract
 assignment_turned_in passport receipt_long speed fire_extinguisher card_membership medical_information hearing home_work
-update event_repeat note_add picture_as_pdf folder_special collections_bookmark checklist_rtl timeline backup settings_backup_restore manage_search android
+update event_repeat note_add water_drop account_balance factory engineering bolt create_new_folder drive_file_move picture_as_pdf folder_special collections_bookmark checklist_rtl timeline backup settings_backup_restore manage_search android folder_open-fill
 """.split()
 
 src = Path(sys.argv[1])

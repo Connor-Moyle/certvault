@@ -81,7 +81,8 @@ function chrome(showNav, fab = false) {
   $("#nav").classList.toggle("hidden", !showNav);
   $("#fab").classList.toggle("hidden", !fab);
   app.classList.toggle("no-nav", !showNav);
-  const r = (location.hash.split("/")[1] || "home").split("?")[0] || "home";
+  let r = (location.hash.split("/")[1] || "home").split("?")[0] || "home";
+  if (r === "folder") r = "folders";
   $$(".nav-item").forEach((a) => {
     const on = a.dataset.nav === r;
     a.classList.toggle("active", on);
@@ -495,6 +496,8 @@ async function viewDoc(id) {
     <label class="side add"><div class="side-img"><div class="side-ph">${icon("add_a_photo", "xl")}<span>${!sides.length ? "Add file" : sides.length > 1 || !["ticket", "personal"].includes(d.kind) ? "Add page" : "Add back"}</span></div></div>
       <input type="file" class="hidden" id="addside"></label>
   </div>`;
+  html += `<div class="folder-row">${(d.folders || []).map((f) => `<a class="fchip on" href="#/folder/${f.id}">${icon(f.icon || "folder_open")}${esc(f.name)}</a>`).join("")}
+    <button class="fchip" id="dfold">${icon("create_new_folder")}${(d.folders || []).length ? "Folders" : "Add to folder"}</button></div>`;
   html += `<div class="list gap kv">
     ${kv("category", "Type", d.category_name)}
     ${kv("apartment", L.issuer, d.issuer ? d.issuer + (d.issuer_type ? ` · ${issuerTypes[d.issuer_type] || d.issuer_type}` : "") : null)}
@@ -551,6 +554,7 @@ async function viewDoc(id) {
     }
   }));
   $("#share").addEventListener("click", () => shareSheet([d]));
+  $("#dfold").addEventListener("click", () => docFoldersDialog(d));
   $("#renew") && $("#renew").addEventListener("click", async () => {
     const guess = d.renew_months || { insurance: 12, vehicle: 12, business: 12, asset: 12, medical: 24, register: 3, personal: 120 }[d.kind] || 12;
     const dl = dialog(`<h2>Mark renewed</h2><p>Sets today as done and moves the due date forward. Upload the new certificate/policy too if you have one.</p>
@@ -748,6 +752,156 @@ async function viewEdit(id) {
     body.renew_months = f.renew_months ? +f.renew_months : null;
     if (body.expiry_date !== (d.expiry_date || "")) body.expiry_estimated = false;
     try { await api(`/api/documents/${id}`, { method: "PATCH", body }); await loadDocs(); snack("Saved"); history.back(); } catch (err) { snack(err.message); }
+  });
+}
+
+// ---------- folders (organisations / groups) ----------
+const READY_LABEL = { valid: "Current", none: "Current (no expiry)", soon: "Expiring soon", expired: "Expired", unknown: "No date", processing: "Reading…", missing: "Missing" };
+
+async function viewFolders() {
+  chrome(true, false);
+  const fl = await api("/api/folders");
+  const orgs = fl.filter((f) => f.ctype !== "group"), groups = fl.filter((f) => f.ctype === "group");
+  const card = (f) => `<a class="fcard c-${esc(f.color || "blue")}" href="#/folder/${f.id}">
+    <div class="lead">${icon(f.icon || "folder_open")}</div>
+    <div class="body"><div class="h">${esc(f.name)}</div><div class="s">${f.count} doc${f.count === 1 ? "" : "s"}${f.required ? ` · ${f.ready}/${f.required} ready` : ""}</div></div>
+    ${f.expired + f.soon + f.missing ? `<span class="mini-badge ${f.expired || f.missing ? "bad" : ""}">${f.expired + f.soon + f.missing}</span>` : ""}</a>`;
+  render(topbar("Folders", { actions: `<button class="icon-btn" id="newf" aria-label="New folder">${icon("create_new_folder")}</button>` }) + `
+    <div class="subtitle">Organisations and groups — filled automatically, add your own any time</div>
+    ${groups.length ? `<div class="section-title">Groups</div><div class="fgrid">${groups.map(card).join("")}</div>` : ""}
+    <div class="section-title">Organisations &amp; clients</div>
+    ${orgs.length ? `<div class="fgrid">${orgs.map(card).join("")}</div>` : `<div class="empty">${icon("folder_open")}<p>No organisations yet. They appear automatically when a document mentions one (e.g. a Western Power induction), or tap ${icon("create_new_folder", "sm")} to add one.</p></div>`}
+  `);
+  $("#newf").addEventListener("click", () => folderDialog());
+}
+
+function folderDialog(f = null) {
+  const icons = ["folder_open", "bolt", "factory", "cell_tower", "engineering", "domain", "anchor", "water_drop", "traffic", "account_balance", "medical_information", "business_center"];
+  const colors = ["blue", "teal", "green", "amber", "orange", "red", "purple", "indigo", "grey"];
+  let ic = (f && f.icon) || "folder_open", col = (f && f.color) || "blue";
+  const dl = dialog(`<h2>${f ? "Edit folder" : "New folder"}</h2><form class="form flush" id="ff">
+    <div class="field"><label>Name</label><input name="name" required maxlength="80" value="${esc(f ? f.name : "")}" placeholder="e.g. Western Power, South32, Telstra"></div>
+    <div class="field"><label>Icon</label><div class="icon-pick" id="ip">${icons.map((i) => `<button type="button" class="icon-btn ${i === ic ? "on" : ""}" data-i="${i}">${icon(i)}</button>`).join("")}</div></div>
+    <div class="field"><label>Colour</label><div class="icon-pick" id="cp">${colors.map((c) => `<button type="button" class="swatch-sm c-${c} ${c === col ? "on" : ""}" data-c="${c}" aria-label="${c}"></button>`).join("")}</div></div>
+    <div class="btn-row"><button type="button" class="btn text" data-close>Cancel</button><button class="btn filled">${icon("check")}Save</button></div></form>`);
+  $$("#ip [data-i]", dl).forEach((b) => b.addEventListener("click", () => { ic = b.dataset.i; $$("#ip [data-i]", dl).forEach((x) => x.classList.toggle("on", x === b)); }));
+  $$("#cp [data-c]", dl).forEach((b) => b.addEventListener("click", () => { col = b.dataset.c; $$("#cp [data-c]", dl).forEach((x) => x.classList.toggle("on", x === b)); }));
+  $("#ff", dl).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = { name: e.target.name.value, icon: ic, color: col };
+    try {
+      if (f) { await api(`/api/folders/${f.id}`, { method: "PATCH", body }); dl.close(); viewFolder(f.id); }
+      else { const r = await api("/api/folders", { method: "POST", body }); dl.close(); location.hash = `#/folder/${r.id}`; }
+    } catch (er) { snack(er.message); }
+  });
+}
+
+async function viewFolder(id) {
+  chrome(true, false);
+  const f = await api(`/api/folders/${id}`);
+  const docs = S.docs.filter((d) => f.doc_ids.includes(d.id) && !d.superseded);
+  const chk = f.checklist || [];
+  const pct = chk.length ? Math.round((f.ready / chk.length) * 100) : null;
+  let html = topbar(f.name, { back: true, actions: `<button class="icon-btn" id="fshare" aria-label="Share folder">${icon("share")}</button>
+    <button class="icon-btn" id="fmore" aria-label="More">${icon("more_vert")}</button>` });
+  html += `<div class="menu hidden" id="fmenu" role="menu">
+    <button role="menuitem" data-fm="req">${icon("checklist")}<span>Required tickets…</span></button>
+    <button role="menuitem" data-fm="add">${icon("drive_file_move")}<span>Add documents…</span></button>
+    <a role="menuitem" href="/api/share/pack.pdf?ids=${docs.map((d) => d.id).join(",")}">${icon("picture_as_pdf")}<span>Download all as one PDF</span></a>
+    <button role="menuitem" data-fm="edit">${icon("edit")}<span>Rename / icon</span></button>
+    <div class="menu-div"></div>
+    <button role="menuitem" data-fm="del" class="danger">${icon("delete")}<span>Delete folder</span></button></div>`;
+  html += `<div class="hero"><div class="lead c-${esc(f.color || "blue")}">${icon(f.icon || "folder_open", "lg")}</div><div><h2>${esc(f.name)}</h2>
+    <div class="s">${f.count} document${f.count === 1 ? "" : "s"}${f.ctype === "group" ? " · automatic group" : ""}</div></div></div>`;
+  if (chk.length) {
+    html += `<div class="card compliance"><div class="ring ${pct === 100 ? "ok" : pct >= 70 ? "warn" : "bad"}" data-pct="${pct}"><span>${pct}%</span></div>
+      <div class="body"><h3>${pct === 100 ? `Ready for ${esc(f.name)}` : `${chk.length - f.ready} to sort out`}</h3><p>${f.ready} of ${chk.length} required tickets current</p></div>
+      <button class="icon-btn" id="sendready" aria-label="Send ready tickets">${icon("send")}</button></div>
+      <div class="section-title">Requirements</div><div class="list gap">${chk.map((c) => `<a class="item" ${c.doc_id ? `href="#/doc/${c.doc_id}"` : `href="#/add"`}>
+        <div class="lead ${c.state === "missing" || c.state === "expired" ? "c-red" : c.state === "soon" ? "c-amber" : "c-green"}">${icon(c.state === "missing" ? "add" : c.state === "expired" ? "error" : c.state === "soon" ? "warning" : "check")}</div>
+        <div class="body"><div class="h">${esc(c.name)}</div><div class="s">${c.doc_id ? `${esc(c.title)}${c.expiry_date ? ` · ${fmtDate(c.expiry_date)}` : ""}` : c.site_specific ? `Upload your ${esc(f.name)} one` : "Not on file — tap to add"}</div></div>
+        <div class="trail"><span class="chip ${c.state === "missing" ? "expired" : c.state}">${esc(READY_LABEL[c.state] || c.state)}</span></div></a>`).join("")}</div>`;
+  } else if (f.ctype !== "group") {
+    html += `<div class="card outlined"><div class="head">${icon("checklist")}<div><h3>What does ${esc(f.name)} require?</h3><p>Pick the tickets they ask for and this folder shows what's current, expiring or missing.</p></div></div>
+      <div class="btn-row end"><button class="btn tonal" id="setreq">${icon("checklist")}Set requirements</button></div></div>`;
+  }
+  html += `<div class="section-title">In this folder</div>${docs.length ? `<div class="list gap">${sortDocs(docs).map(docItem).join("")}</div>`
+    : `<div class="empty">${icon("folder_open")}<p>Nothing here yet.</p><button class="btn tonal" id="adddocs">${icon("drive_file_move")}Add documents</button></div>`}`;
+  render(html);
+  const ring = $(".ring"); if (ring) ring.style.setProperty("--p", ring.dataset.pct);
+  const menu = $("#fmenu");
+  $("#fmore").addEventListener("click", (e) => { e.stopPropagation(); menu.classList.toggle("hidden"); });
+  const reqDialog = () => requirementsDialog(f);
+  const addDialog = () => pickDocsDialog(f);
+  $$("[data-fm]", menu).forEach((b) => b.addEventListener("click", async (e) => {
+    e.stopPropagation(); menu.classList.add("hidden");
+    const m = b.dataset.fm;
+    if (m === "req") return reqDialog();
+    if (m === "add") return addDialog();
+    if (m === "edit") return folderDialog(f);
+    if (m === "del") {
+      if (!(await confirmDlg(`Delete “${f.name}”?`, "Only the folder is removed — the documents stay in CertVault.", "Delete folder"))) return;
+      await api(`/api/folders/${f.id}`, { method: "DELETE" }); snack("Folder deleted"); location.hash = "#/folders";
+    }
+  }));
+  $("#setreq") && $("#setreq").addEventListener("click", reqDialog);
+  $("#adddocs") && $("#adddocs").addEventListener("click", addDialog);
+  $("#fshare").addEventListener("click", () => docs.length ? shareSheet(docs) : snack("Nothing in this folder yet"));
+  $("#sendready") && $("#sendready").addEventListener("click", () => {
+    const ids = chk.filter((c) => c.doc_id && c.state !== "expired").map((c) => c.doc_id);
+    shareSheet(S.docs.filter((d) => ids.includes(d.id) || (f.doc_ids.includes(d.id) && !d.superseded && d.state !== "expired")));
+  });
+}
+
+function requirementsDialog(f) {
+  const cur = new Set(f.requirements.length ? f.requirements : []);
+  const byKind = {};
+  S.cats.filter((c) => ["ticket", "medical", "personal", "business"].includes(c.kind) && c.id !== "other").forEach((c) => (byKind[c.kind] = byKind[c.kind] || []).push(c));
+  const dl = dialog(`<h2>${esc(f.name)} requires…</h2>
+    ${!f.requirements.length && f.suggested.length ? `<button class="btn text" id="sugg">${icon("star_shine")}Use a typical starting list</button>` : ""}
+    <div class="req-list">${Object.entries(byKind).map(([k, cs]) => `<div class="s req-h">${esc(K(k).name)}</div>${cs.map((c) => `<label class="req-row"><input type="checkbox" class="switch" value="${c.id}" ${cur.has(c.id) ? "checked" : ""}><span>${icon(c.icon, "sm")}${esc(c.name)}</span></label>`).join("")}`).join("")}</div>
+    <p class="hint-p">Site inductions and onboarding must be in this folder to count; other tickets count from anywhere in CertVault.</p>
+    <div class="btn-row"><button class="btn text" data-close>Cancel</button><button class="btn filled" id="reqsave">${icon("check")}Save</button></div>`);
+  $("#sugg", dl) && $("#sugg", dl).addEventListener("click", () => { $$(".req-row input", dl).forEach((i) => (i.checked = f.suggested.includes(i.value))); snack("Typical list ticked — adjust to what they actually ask for"); });
+  $("#reqsave", dl).addEventListener("click", async () => {
+    const reqs = $$(".req-row input", dl).filter((i) => i.checked).map((i) => i.value);
+    await api(`/api/folders/${f.id}`, { method: "PATCH", body: { requirements: reqs } }); dl.close(); viewFolder(f.id);
+  });
+}
+
+function pickDocsDialog(f) {
+  const docs = sortDocs(S.docs.filter((d) => !d.superseded));
+  const sel = new Set(f.doc_ids);
+  const dl = dialog(`<h2>Documents in ${esc(f.name)}</h2><label class="search">${icon("search")}<input id="pq" type="search" placeholder="Filter"></label>
+    <div class="list gap pick">${docs.map((d) => `<label class="item" data-t="${esc((d.title + " " + (d.issuer || "") + " " + d.category_name).toLowerCase())}"><input type="checkbox" class="switch" value="${d.id}" ${sel.has(d.id) ? "checked" : ""}>
+      <div class="body"><div class="h">${esc(d.title || "Untitled")}</div><div class="s">${esc(d.category_name)}${d.expiry_date ? ` · ${fmtDate(d.expiry_date)}` : ""}</div></div></label>`).join("")}</div>
+    <div class="spacer"></div><div class="btn-row"><button class="btn text" data-close>Cancel</button><button class="btn filled" id="psave">${icon("check")}Save</button></div>`);
+  $("#pq", dl).addEventListener("input", (e) => { const q = e.target.value.toLowerCase(); $$(".pick .item", dl).forEach((it) => it.classList.toggle("hidden", !!q && !it.dataset.t.includes(q))); });
+  $("#psave", dl).addEventListener("click", async () => {
+    const now = new Set($$(".pick input", dl).filter((i) => i.checked).map((i) => i.value));
+    const add = [...now].filter((x) => !sel.has(x)), remove = [...sel].filter((x) => !now.has(x));
+    await api(`/api/folders/${f.id}/docs`, { method: "POST", body: { add, remove } }); dl.close(); await loadDocs(); viewFolder(f.id);
+  });
+}
+
+async function docFoldersDialog(d) {
+  const fl = await api("/api/folders");
+  const cur = new Set((d.folders || []).map((x) => x.id));
+  const dl = dialog(`<h2>Folders</h2><div class="list gap pick">${fl.map((f) => `<label class="item"><input type="checkbox" class="switch" value="${f.id}" ${cur.has(f.id) ? "checked" : ""}>
+      <div class="lead c-${esc(f.color || "blue")}">${icon(f.icon || "folder_open")}</div><div class="body"><div class="h">${esc(f.name)}</div></div></label>`).join("") || "<p>No folders yet.</p>"}</div>
+    <div class="row2 spacer-top"><div class="field"><label>New folder</label><input id="nfname" placeholder="e.g. South32"></div><div class="field"><label>&nbsp;</label><button class="btn tonal block" id="nfadd">${icon("create_new_folder")}Create</button></div></div>
+    <div class="btn-row"><button class="btn text" data-close>Cancel</button><button class="btn filled" id="dfsave">${icon("check")}Save</button></div>`);
+  $("#nfadd", dl).addEventListener("click", async () => {
+    const name = $("#nfname", dl).value.trim(); if (!name) return;
+    try { const r = await api("/api/folders", { method: "POST", body: { name } }); await api(`/api/folders/${r.id}/docs`, { method: "POST", body: { add: [d.id] } }); dl.close(); snack(`Added to ${name}`); viewDoc(d.id); } catch (er) { snack(er.message); }
+  });
+  $("#dfsave", dl).addEventListener("click", async () => {
+    const now = new Set($$(".pick input", dl).filter((i) => i.checked).map((i) => +i.value));
+    for (const f of fl) {
+      if (now.has(f.id) && !cur.has(f.id)) await api(`/api/folders/${f.id}/docs`, { method: "POST", body: { add: [d.id] } });
+      if (!now.has(f.id) && cur.has(f.id)) await api(`/api/folders/${f.id}/docs`, { method: "POST", body: { remove: [d.id] } });
+    }
+    dl.close(); await loadDocs(); viewDoc(d.id);
   });
 }
 
@@ -1015,6 +1169,8 @@ async function route() {
     if (parts[0] === "doc") return await viewDoc(parts[1]);
     if (parts[0] === "settings") return await viewSettings();
     if (parts[0] === "list") return await viewList();
+    if (parts[0] === "folders") return await viewFolders();
+    if (parts[0] === "folder") return await viewFolder(parts[1]);
     if (parts[0] === "login" || parts[0] === "setup") { location.hash = "#/"; return; }
     viewHome();
   } catch (e) { snack(e.message); }

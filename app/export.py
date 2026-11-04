@@ -23,7 +23,7 @@ COLUMNS = [
     ("Status", 12), ("Days left", 9), ("Version", 10), ("Title", 40), ("Kind", 18), ("Type", 26), ("Issued by", 30),
     ("Issuer type", 16), ("Holder", 22), ("Number", 18), ("Completed / last inspected", 16),
     ("Expiry / next due", 16), ("Expiry estimated", 10), ("Doesn't expire", 10), ("Location", 26),
-    ("Classes / endorsements", 40), ("RTO code", 10), ("Cost", 10), ("Tags", 20), ("Required for", 26),
+    ("Folders", 26), ("Classes / endorsements", 40), ("RTO code", 10), ("Cost", 10), ("Tags", 20), ("Required for", 26),
     ("How to renew", 30), ("Sides / pages", 8), ("Last shared", 24),
     ("Notes", 50), ("Reminder days", 14), ("Review status", 12), ("Read by", 20), ("File name", 30),
     ("Uploaded", 16), ("Last updated", 16), ("ID", 34),
@@ -68,6 +68,13 @@ def rows_for(user_id: int, only_ids: set | None = None) -> list[dict]:
     for sh in db.q("SELECT doc_ids, recipient, method, created_at FROM shares WHERE user_id=? ORDER BY id", (user_id,)):
         for did in sh["doc_ids"].split(","):
             last_share[did] = f"{sh['recipient'] or sh['method']} ({(_dt(sh['created_at']) or datetime.now()):%d/%m/%Y})"
+    fnames = {}
+    try:
+        for fr in db.q("SELECT dc.doc_id, c.name FROM doc_collections dc JOIN collections c ON c.id=dc.collection_id "
+                       "WHERE c.user_id=? AND dc.excluded=0 ORDER BY c.name", (user_id,)):
+            fnames.setdefault(fr["doc_id"], []).append(fr["name"])
+    except Exception:
+        pass
     for r in all_rows:
         if only_ids is not None and r["id"] not in only_ids:
             continue
@@ -97,6 +104,7 @@ def rows_for(user_id: int, only_ids: set | None = None) -> list[dict]:
             "Expiry estimated": "Yes" if r["expiry_estimated"] else "",
             "Doesn't expire": "Yes" if r["no_expiry"] else "",
             "Location": r["location"],
+            "Folders": ", ".join(fnames.get(r["id"], [])) or None,
             "Classes / endorsements": r["classes"],
             "RTO code": r["rto_code"],
             "Cost": r["cost"],
