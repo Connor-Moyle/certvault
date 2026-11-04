@@ -18,8 +18,10 @@ def group_key(d) -> str | None:
     if d["version_group"] == "solo":
         return None
     cat = d["category"] or "other"
-    if d["licence_number"] and cat == "drivers_licence":
-        return f"{cat}#{_norm(d['licence_number'])}"
+    num = _norm(d["licence_number"])
+    # a renewed licence/HRWL/policy keeps its number — group on that when the type is specific
+    if num and len(num) >= 5 and cat not in ("other", "other_register", "training", "asset_receipt"):
+        return f"{cat}#{num}"
     t = _norm(d["title"])
     if not t:
         return None

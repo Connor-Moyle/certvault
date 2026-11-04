@@ -96,3 +96,14 @@ def test_broader_categories():
     }
     for text, cat in cases.items():
         assert rule_extract(text, TODAY)["category"] == cat, (text[:30], rule_extract(text, TODAY)["category"])
+
+def test_versions_group_by_number():
+    from app.versions import annotate
+    base = {"status": "ok", "version_group": None, "issuer": "WorkSafe WA", "completion_date": None, "created_at": "2026-01-01"}
+    docs = [
+        {**base, "id": "a", "category": "hrwl", "title": "High Risk Work Licence", "licence_number": "HRW123456", "expiry_date": "2025-03-04"},
+        {**base, "id": "b", "category": "hrwl", "title": "HRWL (renewed)", "licence_number": "HRW 123456", "expiry_date": "2030-03-04"},
+        {**base, "id": "c", "category": "hrwl", "title": "High Risk Work Licence", "licence_number": "HRW999999", "expiry_date": "2029-01-01"},
+    ]
+    out = {d["id"]: d for d in annotate(docs)}
+    assert out["a"]["superseded"] and not out["b"]["superseded"] and not out["c"]["superseded"]
