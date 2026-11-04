@@ -45,6 +45,13 @@ Upload a photo or PDF. **AI reads the file and fills in the details**: type, who
   - Every share is logged on the document ("Shared with …").
 - **Add to calendar.** A `.ics` file per document or for all expiries, with alarms that match your reminder days.
 - **Cleaner scanned text.** Photos are straightened, shadows are removed, upside-down/sideways shots are detected and junk is filtered out. With AI on you get a clean transcript as well.
+- **Search inside documents.** Search matches the scanned/AI text of every side, not just titles, and shows the matching snippet.
+- **Timeline.** A 12-month view of what falls due each month, with a bar chart and estimated renewal costs.
+- **Weekly summary.** Monday morning push/email listing what's expired or due within 30 days.
+- **Backups.**
+  - The database is copied every night to `backups/`, keeping the last 14.
+  - *Settings → Backup* downloads a full backup ZIP (database + every file).
+  - **Restore** uploads one, and the app restarts itself to apply it. The previous database is kept just in case.
 - **Activity log.** Logins (including failed ones), uploads, edits, shares and settings changes.
 - **Master list.** One text-only list of every document with every field. It's on the *Master list* tab (filter, print, tap a row to open it) and downloads as Excel or CSV. An always-current copy is also saved on the NAS at `/mnt/CME_Nas/certvault/exports/<you> - CertVault Master List.xlsx` (and `.csv`).
 - **AI autofill.** Claude (Anthropic API) or your own **Ollama** vision model looks at every file. OCR text is also sent to help it.

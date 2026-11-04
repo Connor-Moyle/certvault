@@ -208,6 +208,7 @@ function viewHome() {
     <div class="body"><h3>${pct === 100 ? "Fully compliant" : `${tracked.length - Math.round(pct * tracked.length / 100)} expired`}</h3>
     <p>${tracked.length} tracked · ${docs.filter((d) => d.kind === "register").length} registers${next ? `<br>Next: <b>${esc(next.title)}</b> in ${next.days_left} day${next.days_left === 1 ? "" : "s"}` : ""}</p></div>
     <button class="icon-btn" id="sharepack" aria-label="Share all current tickets">${icon("share")}</button></div>`;
+  html += `<div class="btn-row home-links"><a class="btn tonal" href="#/timeline">${icon("timeline")}Timeline</a><a class="btn tonal" href="#/folders">${icon("folder_open")}Folders</a></div>`;
   const kinds = [...new Set(docs.map((d) => d.kind))];
   if (kinds.length > 1) html += `<div class="chips kinds">${kinds.map((k) => { const n = docs.filter((d) => d.kind === k); const bad = n.filter((d) => d.state === "expired" || d.state === "soon").length;
     return `<a class="fchip" href="#/all?f=kind:${k}">${icon(K(k).icon)}${esc(K(k).name)} <b>${n.length}</b>${bad ? `<span class="mini-badge">${bad}</span>` : ""}</a>`; }).join("")}</div>`;
@@ -233,7 +234,7 @@ function viewAll(params) {
   render(topbar(selecting ? `${S.sel.size} selected` : "Documents", { actions: selecting
     ? `<button class="icon-btn" id="selall" aria-label="Select all shown">${icon("select_check_box")}</button><button class="icon-btn" id="selx" aria-label="Cancel">${icon("close")}</button>`
     : `<button class="icon-btn" id="selon" aria-label="Select to share">${icon("check_box")}</button>` }) + `
-    <label class="search">${icon("search")}<input id="q" type="search" placeholder="Search tickets, issuers, numbers" value="${esc(S.query)}" enterkeyhint="search"></label>
+    <label class="search">${icon("search")}<input id="q" type="search" placeholder="Search everything — even the text inside documents" value="${esc(S.query)}" enterkeyhint="search"></label>
     <div class="chips" id="chips">${filters.map(([k, l, i]) => `<button class="fchip ${S.filter === k ? "on" : ""}" data-f="${esc(k)}">${S.filter === k ? icon("check") : ""}${esc(l)}</button>`).join("")}</div>
     <div id="res"></div>
     ${selecting ? `<div class="actionbar"><span>${S.sel.size ? `${S.sel.size} to share` : "Tap documents to select"}</span>
@@ -245,7 +246,8 @@ function viewAll(params) {
     else if (S.filter.startsWith("kind:")) docs = docs.filter((d) => d.kind === S.filter.slice(5));
     else if (S.filter.startsWith("cat:")) docs = docs.filter((d) => (d.category || "other") === S.filter.slice(4));
     else if (!["all", "old"].includes(S.filter)) docs = docs.filter((d) => d.state === S.filter);
-    if (q) docs = docs.filter((d) => [d.title, d.issuer, d.licence_number, d.category_name, d.holder_name, d.location, d.notes, d.original_name,
+    const textHits = S.textHits && S.textHits.q === q ? S.textHits.map : {};
+    if (q) docs = docs.filter((d) => textHits[d.id] || [d.title, d.issuer, d.licence_number, d.category_name, d.holder_name, d.location, d.notes, d.original_name,
       d.classes, d.tags, d.required_for, d.rto_code]
       .some((v) => (v || "").toLowerCase().includes(q)));
     S.shown = sortDocs(docs);
@@ -263,7 +265,28 @@ function viewAll(params) {
   $("#selx") && $("#selx").addEventListener("click", () => { S.selecting = false; S.sel = new Set(); viewAll(new URLSearchParams()); });
   $("#selall") && $("#selall").addEventListener("click", () => { (S.shown || []).forEach((d) => S.sel.add(d.id)); viewAll(new URLSearchParams()); });
   $("#selshare") && $("#selshare").addEventListener("click", () => shareSheet(S.docs.filter((d) => S.sel.has(d.id))));
-  $("#q").addEventListener("input", (e) => { S.query = e.target.value; draw(); });
+  let st;
+  const textSearch = () => {
+    clearTimeout(st);
+    const q = S.query.trim().toLowerCase();
+    if (q.length < 3) return;
+    st = setTimeout(async () => {
+      try {
+        const hits = await api(`/api/search?q=${encodeURIComponent(q)}`);
+        S.textHits = { q, map: Object.fromEntries(hits.map((h) => [h.id, h.snippet])) };
+        if (S.query.trim().toLowerCase() === q) { draw(); markSnippets(); }
+      } catch (e) { /* ignore */ }
+    }, 300);
+  };
+  const markSnippets = () => {
+    const m = (S.textHits && S.textHits.map) || {};
+    $$("#res a.item").forEach((a) => {
+      const id = (a.getAttribute("href") || "").split("/").pop();
+      if (m[id] && !$(".snip", a)) { const sn = document.createElement("div"); sn.className = "s snip"; sn.textContent = `“${m[id]}”`; $(".body", a).append(sn); }
+    });
+  };
+  $("#q").addEventListener("input", (e) => { S.query = e.target.value; draw(); textSearch(); });
+  if (S.query) textSearch();
   $$("#chips .fchip").forEach((b) => b.addEventListener("click", () => { S.filter = b.dataset.f; history.replaceState(null, "", "#/all"); viewAll(new URLSearchParams()); }));
 }
 
@@ -915,6 +938,35 @@ async function docFoldersDialog(d) {
   });
 }
 
+// ---------- timeline: what's due over the next 12 months ----------
+function viewTimeline() {
+  chrome(true, false);
+  const docs = sortDocs(S.docs.filter((d) => !d.superseded && d.expiry_date && d.status !== "processing"));
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  const overdue = docs.filter((d) => d.days_left < 0);
+  const groups = [];
+  for (let m = 0; m < 13; m++) {
+    const start = new Date(now.getFullYear(), now.getMonth() + m, 1);
+    const end = new Date(now.getFullYear(), now.getMonth() + m + 1, 1);
+    const inMonth = docs.filter((d) => { const x = new Date(d.expiry_date + "T00:00:00"); return d.days_left >= 0 && x >= start && x < end; });
+    groups.push({ label: start.toLocaleDateString("en-AU", { month: "long", year: "numeric" }), docs: inMonth });
+  }
+  const later = docs.filter((d) => new Date(d.expiry_date + "T00:00:00") >= new Date(now.getFullYear(), now.getMonth() + 13, 1));
+  const cost = (list) => list.reduce((a, d) => a + (parseFloat(String(d.cost || "").replace(/[^0-9.]/g, "")) || 0), 0);
+  const sect = (label, list, cls = "") => list.length ? `<div class="tl-month ${cls}"><div class="tl-head"><span>${esc(label)}</span><span class="s">${list.length} item${list.length > 1 ? "s" : ""}${cost(list) ? ` · ~$${cost(list).toLocaleString("en-AU", { maximumFractionDigits: 0 })}` : ""}</span></div>
+    <div class="list gap">${list.map(docItem).join("")}</div></div>` : "";
+  const busiest = groups.reduce((a, g) => (g.docs.length > (a ? a.docs.length : 0) ? g : a), null);
+  render(topbar("Timeline", { back: true }) + `
+    <div class="subtitle">Everything that expires or falls due, month by month${busiest && busiest.docs.length > 1 ? ` · busiest: ${esc(busiest.label)}` : ""}</div>
+    <div class="tl-bars">${groups.map((g) => `<div class="tl-bar"><div class="tl-fill" data-n="${g.docs.length}"></div><span>${esc(g.label.slice(0, 3))}</span></div>`).join("")}</div>
+    ${sect("Overdue / expired", overdue, "bad")}
+    ${groups.map((g) => sect(g.label, g.docs)).join("")}
+    ${sect("Later", later)}
+    ${docs.length ? "" : `<div class="empty">${icon("timeline")}<p>Nothing with a date yet.</p></div>`}`);
+  const max = Math.max(1, ...groups.map((g) => g.docs.length));
+  $$(".tl-fill").forEach((f) => { f.style.height = `${Math.round((+f.dataset.n / max) * 100)}%`; if (+f.dataset.n) f.classList.add("on"); });
+}
+
 // ---------- master list (text only, every field) ----------
 async function viewList() {
   chrome(true, false);
@@ -1023,6 +1075,13 @@ async function viewSettings() {
       ${field("g", "public_url", "Link to this app (for notification taps)", { ph: "http://192.168.0.50:30090" })}
       <div class="btn-row end"><button class="btn filled" id="saveg">Save</button></div></div></div>`;
   }
+  if (admin) html += `<div class="section-title">Backup</div><div class="card"><div class="form flush">
+    <p>CertVault backs up its database every night to the <code>backups</code> folder on the NAS (last 14 kept). Download a full backup (database + every file) to keep a copy somewhere else.</p>
+    <div class="btn-row"><a class="btn filled" href="/api/backup">${icon("backup")}Download full backup</a>
+      <label class="btn outlined">${icon("settings_backup_restore")}Restore…<input type="file" accept=".zip" class="hidden" id="restore"></label></div></div></div>`;
+  html += `<div class="section-title">Automatic</div><div class="card"><div class="form flush">
+    <div class="switch-row"><div class="body">Weekly summary<div class="s">Monday morning: what's expired or due in the next 30 days</div></div><input type="checkbox" class="switch" id="wdig" ${(st.user.weekly_digest || "1") === "1" ? "checked" : ""}></div>
+    <div class="switch-row"><div class="body">Auto-file into folders<div class="s">Put documents in organisation, Medicals and Gov docs folders automatically</div></div><input type="checkbox" class="switch" id="afold" ${(st.user.auto_folders || "1") === "1" ? "checked" : ""}></div></div></div>`;
   html += window.CertVaultAndroid
     ? `<div class="section-title">Android app</div><div class="list gap"><div class="item" id="appsrv"><div class="lead c-green">${icon("android")}</div><div class="body"><div class="h">Server address</div><div class="s">${esc(window.CertVaultAndroid.serverUrl())} · app v${esc(window.CertVaultAndroid.version())}</div></div></div></div>`
     : `<div class="section-title">Android app</div><div class="list gap"><a class="item" href="https://github.com/Connor-Moyle/certvault/releases/latest/download/CertVault.apk"><div class="lead c-green">${icon("android")}</div><div class="body"><div class="h">Get the Android app</div><div class="s">Native sharing, open PDFs, "Share to CertVault" from any app, reminders — download the APK</div></div></a></div>`;
@@ -1087,6 +1146,15 @@ async function viewSettings() {
     const r = await api("/api/naming/apply-titles", { method: "POST" }); await loadDocs(); snack(`${r.renamed} titles renamed`);
   });
   $("#appsrv") && $("#appsrv").addEventListener("click", () => window.CertVaultAndroid.changeServer());
+  $("#wdig").addEventListener("change", (e) => saveUser({ weekly_digest: e.target.checked ? "1" : "0" }).then(() => snack("Saved")));
+  $("#afold").addEventListener("change", (e) => saveUser({ auto_folders: e.target.checked ? "1" : "0" }).then(() => snack("Saved")));
+  $("#restore") && $("#restore").addEventListener("change", async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    if (!(await confirmDlg("Restore this backup?", "Everything in CertVault is replaced with the backup. Your current database is kept in the backups folder just in case.", "Restore", true))) return;
+    const fd = new FormData(); fd.append("file", f, f.name);
+    snack("Uploading backup…", 60000);
+    try { const r = await xhrUpload("/api/restore", fd, () => {}); snack(r.message, 15000); setTimeout(() => location.reload(), 12000); } catch (er) { snack(er.message, 8000); }
+  });
   $("#savep").addEventListener("click", async (e) => { try { await saveUser(collect("u", e.target.closest(".card"))); snack("Saved"); } catch (er) { snack(er.message); } });
   $("#act").addEventListener("click", async () => {
     const rows = await api("/api/activity");
@@ -1184,6 +1252,7 @@ async function route() {
     if (parts[0] === "settings") return await viewSettings();
     if (parts[0] === "list") return await viewList();
     if (parts[0] === "folders") return await viewFolders();
+    if (parts[0] === "timeline") return viewTimeline();
     if (parts[0] === "folder") return await viewFolder(parts[1]);
     if (parts[0] === "login" || parts[0] === "setup") { location.hash = "#/"; return; }
     viewHome();

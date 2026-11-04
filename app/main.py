@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from . import files as files_mod
 from . import pdfconv
 from . import folders
+from . import backup
 from . import ai, config, db, export, extract, files, naming, notify, scheduler, security, share, versions
 from .categories import CATEGORIES, CATEGORY_BY_ID, KINDS, is_register, kind_of
 
@@ -28,7 +29,7 @@ logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(
 log = logging.getLogger("certvault")
 
 STATIC = Path(__file__).parent / "static"
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 
 app = FastAPI(title="CertVault", docs_url=None, redoc_url=None, openapi_url=None)
 worker = ThreadPoolExecutor(max_workers=1)  # one document at a time — gentle on the NAS
@@ -41,6 +42,9 @@ SETUP_CODE: str | None = None
 @app.on_event("startup")
 def startup():
     global SETUP_CODE
+    config.ensure_dirs()
+    if backup.apply_pending_restore():
+        log.warning("Restored from backup")
     db.init()
     folders.init()
     if not db.q1("SELECT 1 FROM users"):
@@ -908,6 +912,59 @@ def folder_docs(cid: int, body: FolderDocsIn, user=Depends(security.require_user
     return {"ok": True}
 
 
+# ---- search inside documents -------------------------------------------------------------------
+
+@app.get("/api/search")
+def search(q: str, user=Depends(security.require_user)):
+    """Find documents by any word in them — including the scanned/AI text of every side."""
+    terms = [t for t in re.split(r"\s+", q.strip().lower()) if len(t) >= 2][:6]
+    if not terms:
+        return []
+    out = []
+    rows = db.q("SELECT d.id, d.title, d.issuer, d.licence_number, d.classes, d.notes, d.ocr_text, d.ai_text, "
+                "(SELECT group_concat(p.ocr_text, ' ') FROM doc_pages p WHERE p.doc_id=d.id) AS pages_text "
+                "FROM documents d WHERE d.user_id=?", (user["id"],))
+    for r in rows:
+        hay = " ".join(str(r[k] or "") for k in ("title", "issuer", "licence_number", "classes", "notes", "ai_text", "ocr_text", "pages_text"))
+        low = hay.lower()
+        if all(t in low for t in terms):
+            i = low.find(terms[0])
+            snip = re.sub(r"\s+", " ", hay[max(0, i - 40): i + 80]).strip()
+            out.append({"id": r["id"], "snippet": ("…" if i > 40 else "") + snip + "…"})
+    return out[:100]
+
+
+# ---- backup / restore ----------------------------------------------------------------------------
+
+@app.get("/api/backup")
+def download_backup(request: Request, user=Depends(security.require_admin)):
+    path = backup.full_zip()
+    db.log_activity(user["id"], "backup downloaded", path.name, security.client_ip(request))
+    from starlette.background import BackgroundTask
+    return FileResponse(path, media_type="application/zip", filename=path.name,
+                        background=BackgroundTask(lambda: path.unlink(missing_ok=True)))
+
+
+@app.post("/api/restore")
+async def restore_backup(request: Request, file: UploadFile = File(...), user=Depends(security.require_admin)):
+    tmp = files.tmp_dir() / f"restore-{uuid.uuid4().hex}.zip"
+    try:
+        with open(tmp, "wb") as out:
+            while chunk := await file.read(4 * 1024 * 1024):
+                out.write(chunk)
+        try:
+            backup.stage_restore(tmp)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            raise HTTPException(400, f"Couldn't read that backup: {e}")
+    finally:
+        tmp.unlink(missing_ok=True)
+    db.log_activity(user["id"], "restore staged", file.filename, security.client_ip(request))
+    backup.restart_soon()
+    return {"ok": True, "message": "Restoring — CertVault restarts in a few seconds. Log in again when it's back."}
+
+
 # ---- file naming -------------------------------------------------------------------------------
 
 @app.get("/api/naming")
@@ -1151,7 +1208,8 @@ def master_csv(user=Depends(security.require_user)):
 
 USER_KEYS = ["reminder_days", "remind_expired_weekly", "ntfy_url", "ntfy_token", "email_to", "ha_webhook_url",
              "full_name", "company", "phone", "my_email",
-             "name_tokens", "name_sep", "name_datefmt", "name_case", "name_titles", "library", "share_format", "library_format"]
+             "name_tokens", "name_sep", "name_datefmt", "name_case", "name_titles", "library", "share_format", "library_format",
+             "weekly_digest", "auto_folders"]
 GLOBAL_KEYS = ["ai_provider", "anthropic_api_key", "anthropic_model", "ollama_url", "ollama_model",
                "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "notify_hour", "public_url"]
 SECRET_KEYS = {"ntfy_token", "anthropic_api_key", "smtp_pass"}

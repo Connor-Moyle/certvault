@@ -116,10 +116,50 @@ def check_user(user_id: int, today: date | None = None) -> int:
     return sent
 
 
+def weekly_digest(user_id: int, today: date | None = None) -> bool:
+    """Monday morning summary: what's expired / due in the next 30 days (once a week, only if anything)."""
+    today = today or today_local()
+    if db.get_setting(user_id, "weekly_digest", "1") != "1" or today.weekday() != 0:
+        return False
+    if db.get_setting(user_id, "last_digest") == today.isoformat():
+        return False
+    old = versions.superseded_ids(db.q("SELECT * FROM documents WHERE user_id=?", (user_id,)))
+    exp, soon = [], []
+    for d in db.q("SELECT * FROM documents WHERE user_id=? AND expiry_date IS NOT NULL", (user_id,)):
+        if d["id"] in old:
+            continue
+        try:
+            days = (date.fromisoformat(d["expiry_date"]) - today).days
+        except ValueError:
+            continue
+        if days < 0:
+            exp.append(d["title"] or "Untitled")
+        elif days <= 30:
+            soon.append(f"{d['title'] or 'Untitled'} — {fmt(date.fromisoformat(d['expiry_date']))}")
+    if not exp and not soon:
+        return False
+    title = "CertVault weekly: " + ", ".join(x for x in (f"{len(exp)} expired" if exp else "", f"{len(soon)} due within 30 days" if soon else "") if x)
+    body = "\n".join([*(f"EXPIRED: {e}" for e in exp), *soon])
+    base = (db.get_setting(0, "public_url") or "").rstrip("/")
+    try:
+        notify.send(user_id, title, body, bool(exp), f"{base}/#/" if base else None)
+        db.set_setting(user_id, "last_digest", today.isoformat())
+        return True
+    except Exception as e:
+        log.info("weekly digest not sent: %s", e)
+        return False
+
+
 def run_once() -> int:
     total = 0
+    try:
+        from . import backup
+        backup.nightly()
+    except Exception:
+        log.exception("Nightly backup failed")
     for u in db.q("SELECT id FROM users"):
         total += check_user(u["id"])
+        weekly_digest(u["id"])
     db.set_setting(0, "last_check", datetime.now(ZoneInfo(config.TZ)).isoformat(timespec="minutes"))
     return total
 
