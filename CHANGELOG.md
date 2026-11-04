@@ -1,5 +1,18 @@
 # CertVault changelog
 
+## 1.8 — security & reliability (independent review)
+- NAS library files are now **independent copies**, not hard links, so editing or deleting them over SMB can never damage the originals. Each user gets their own folder.
+- Version grouping is stricter: unrelated uploads (e.g. two `image.jpg` photos) are no longer merged or hidden, and the newest *issued* copy wins.
+- **Android app pins your server:** it won't load the page or send your login to a different device at the same address (e.g. on someone else's Wi-Fi).
+  - Sharing only fetches from your own server.
+  - Temp files are cleaned up.
+- ZIP imports share one 8 GB / 2000-file budget across nested ZIPs, with a zip-bomb check on every file. Huge TIFF scans are converted page by page.
+- Deleting a user also deletes their PDFs, library folder and master list.
+- The login lockout can't be dodged with spaces or capitals in the username.
+- The pre-restore safety copy includes the latest changes, and restarts work under any restart policy.
+- Downloads with non-English characters in names work (e.g. "Tāne").
+- LibreOffice conversions can't clash, Tesseract has timeouts so a bad file can't stall the queue, adding a page to a confirmed document keeps it confirmed, and folder icons are validated.
+
 ## 1.7 — search, timeline, backups
 - **Search inside documents.** Search matches the text of every side (OCR/AI), not just titles, and shows a snippet.
 - **Timeline:** 12 months of what's due, a bar chart per month, and estimated renewal costs.

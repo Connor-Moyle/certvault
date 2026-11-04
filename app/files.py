@@ -130,51 +130,79 @@ def _image_to(src: Path, name: str, keep_png: bool) -> Stored:
 
 
 def _tiff_to_pdf(src: Path, name: str) -> Stored:
-    """Scanners love multi-page TIFF; browsers can't show it. Keep every page as one PDF."""
-    with Image.open(src) as im:
-        pages = []
-        i = 0
-        while True:
-            try:
-                im.seek(i)
-            except EOFError:
-                break
-            pages.append(im.convert("RGB").copy())
-            i += 1
-            if i >= 500:
-                break
-    out = _new_tmp("pdf")
-    pages[0].save(out, "PDF", save_all=True, append_images=pages[1:], resolution=200)
-    return _finish(out, "pdf", name)
+    """Scanners love multi-page TIFF; browsers can't show it. Keep every page as one PDF.
+    Pages are converted one at a time so a huge scan can't exhaust memory."""
+    import subprocess
+    work = tmp_dir() / f"tiff-{uuid.uuid4().hex}"
+    work.mkdir()
+    try:
+        parts = []
+        with Image.open(src) as im:
+            i = 0
+            while i < 500:
+                try:
+                    im.seek(i)
+                except EOFError:
+                    break
+                page = im.convert("RGB")
+                if max(page.size) > 6000:
+                    page.thumbnail((6000, 6000))
+                p = work / f"{i:04d}.pdf"
+                page.save(p, "PDF", resolution=200)
+                page.close()
+                parts.append(p)
+                i += 1
+        out = _new_tmp("pdf")
+        if len(parts) == 1:
+            shutil.move(str(parts[0]), out)
+        else:
+            subprocess.run(["pdfunite", *map(str, parts), str(out)], check=True, capture_output=True, timeout=600)
+        return _finish(out, "pdf", name)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
-def _unzip(src: Path, name: str, depth: int) -> list[Stored]:
+class _Budget:
+    """Shared across nested ZIPs: total bytes that may be unpacked from one upload."""
+    def __init__(self, total: int = MAX_ZIP_TOTAL, files: int = MAX_ZIP_FILES):
+        self.bytes, self.files = total, files
+
+
+def _unzip(src: Path, name: str, depth: int, budget: "_Budget") -> list[Stored]:
     out: list[Stored] = []
     with zipfile.ZipFile(src) as z:
         infos = [i for i in z.infolist() if not i.is_dir()]
-        if len(infos) > MAX_ZIP_FILES:
-            raise ValueError(f"ZIP has {len(infos)} files — max {MAX_ZIP_FILES}")
-        total = sum(i.file_size for i in infos)
-        if total > MAX_ZIP_TOTAL:
-            raise ValueError("ZIP unpacks to more than 8 GB")
         for info in infos:
             inner = info.filename.split("/")
             if any(is_junk(part) for part in inner):
                 continue
-            if info.compress_size and info.file_size / info.compress_size > MAX_ZIP_RATIO and info.file_size > 50 * 1024 ** 2:
+            budget.files -= 1
+            if budget.files < 0:
+                raise ValueError(f"ZIP has more than {MAX_ZIP_FILES} files")
+            if info.file_size > 1024 ** 2 and info.compress_size and info.file_size / info.compress_size > MAX_ZIP_RATIO:
                 raise ValueError(f"{info.filename} looks like a zip bomb — refused")
+            if info.file_size > budget.bytes:
+                raise ValueError("ZIP unpacks to more than 8 GB in total")
             member = clean_name(inner[-1])
             dest = _new_tmp(ext_of(member))
+            written = 0
             with z.open(info) as fsrc, open(dest, "wb") as fdst:
-                shutil.copyfileobj(fsrc, fdst, 1024 * 1024)
+                while chunk := fsrc.read(1024 * 1024):
+                    written += len(chunk)
+                    if written > budget.bytes:  # sizes in the header can lie
+                        fdst.close()
+                        dest.unlink(missing_ok=True)
+                        raise ValueError("ZIP unpacks to more than 8 GB in total")
+                    fdst.write(chunk)
+            budget.bytes -= written
             try:
-                out += prepare(dest, member, depth + 1)
+                out += prepare(dest, member, depth + 1, budget)
             finally:
                 dest.unlink(missing_ok=True)
     return out
 
 
-def prepare(src: Path, filename: str, depth: int = 0) -> list[Stored]:
+def prepare(src: Path, filename: str, depth: int = 0, budget: "_Budget | None" = None) -> list[Stored]:
     """Turn one uploaded file into stored file(s). Never drops a file: if conversion fails,
     the original is kept as-is."""
     name = clean_name(filename)
@@ -184,7 +212,7 @@ def prepare(src: Path, filename: str, depth: int = 0) -> list[Stored]:
     kind = _sniff(head, ext)
     try:
         if kind == "zip" and depth < 3:
-            return _unzip(src, name, depth)
+            return _unzip(src, name, depth, budget or _Budget())
         if kind in ("jpg", "webp"):
             return [_image_to(src, name, keep_png=False)]
         if kind == "png":
@@ -193,6 +221,8 @@ def prepare(src: Path, filename: str, depth: int = 0) -> list[Stored]:
             return [_image_to(src, name, keep_png=kind == "bmp")]
         if kind == "tiff":
             return [_tiff_to_pdf(src, name)]
+    except ValueError:
+        raise
     except Exception as e:  # damaged/odd image: keep the original rather than skip it
         log.warning("Conversion failed for %s (%s) — storing original", name, e)
     dest = _new_tmp(kind or "bin")

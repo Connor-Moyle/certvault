@@ -29,7 +29,7 @@ logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(
 log = logging.getLogger("certvault")
 
 STATIC = Path(__file__).parent / "static"
-VERSION = "1.7.0"
+VERSION = "1.8.0"
 
 app = FastAPI(title="CertVault", docs_url=None, redoc_url=None, openapi_url=None)
 worker = ThreadPoolExecutor(max_workers=1)  # one document at a time — gentle on the NAS
@@ -90,7 +90,14 @@ async def headers_mw(request: Request, call_next):
     return resp
 
 
-# ---- helpers -------------------------------------------------------------------------
+# ---- helpers ----
+
+def attachment(filename: str) -> str:
+    """Content-Disposition that works for any characters (ā, emoji…) in a file name."""
+    from urllib.parse import quote
+    ascii_name = filename.encode("ascii", "replace").decode().replace("?", "_").replace('"', "")
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+
 
 def doc_state(row) -> dict:
     d = dict(row)
@@ -229,6 +236,8 @@ def process_document(doc_id: str, mode: str = "full"):
                 error = f"AI failed, used OCR instead: {e}"
                 log.warning("AI analyse failed for %s: %s", doc_id, e)
         fields.setdefault("no_expiry", False)
+        if fields.get("category") in (None, "other") and fields.get("title") in (None, "", "Other"):
+            fields["title"] = row["title"] or Path(row["original_name"] or "Document").stem[:100]
         sets, vals = [], []
         for k in EXTRACTED:
             if k not in fields:
@@ -236,11 +245,12 @@ def process_document(doc_id: str, mode: str = "full"):
             v = fields.get(k)
             if isinstance(v, bool):
                 v = int(v)
-            if mode == "fill" and row[k] not in (None, "", 0):
+            if mode in ("fill", "fill-keep") and row[k] not in (None, "", 0):
                 continue
             sets.append(f"{k}=?")
             vals.append(v)
-        new_status = "review" if row["status"] in ("processing", "review", "error") or mode == "full" else row["status"]
+        new_status = "ok" if mode == "fill-keep" else (
+            "review" if row["status"] in ("processing", "review", "error") or mode == "full" else row["status"])
         sets += ["extract_source=?", "extract_error=?", "status=?", "ai_text=?", "updated_at=datetime('now')"]
         vals += [source, error, new_status, ai_text, doc_id]
         db.run(f"UPDATE documents SET {', '.join(sets)} WHERE id=?", vals)
@@ -276,8 +286,12 @@ class LoginIn(BaseModel):
 @app.get("/api/status")
 def status(request: Request):
     sess = security.session_from_request(request)
+    iid = db.get_setting(0, "instance_id")
+    if not iid:
+        iid = secrets.token_hex(16)
+        db.set_setting(0, "instance_id", iid)
     return {"setup_required": db.q1("SELECT 1 FROM users") is None,
-            "logged_in": bool(sess), "version": VERSION}
+            "logged_in": bool(sess), "version": VERSION, "instance": iid}
 
 
 @app.post("/api/setup")
@@ -305,8 +319,9 @@ def setup(body: SetupIn, request: Request):
 @app.post("/api/login")
 def login(body: LoginIn, request: Request):
     ip = security.client_ip(request)
+    body.username = body.username.strip().lower()  # one lockout bucket per account, however it's typed
     security.check_rate_limit(ip, body.username)
-    user = db.q1("SELECT * FROM users WHERE username=?", (body.username.strip(),))
+    user = db.q1("SELECT * FROM users WHERE username=?", (body.username,))
     if not security.verify_password(user["pw_hash"] if user else None, body.password):
         security.record_failure(ip, body.username)
         db.log_activity(user["id"] if user else None, "login failed", body.username[:64], ip)
@@ -538,7 +553,7 @@ async def add_page(doc_id: str, request: Request, file: UploadFile = File(...), 
     pid = doc_id
     # re-read with the new side: fully if not yet confirmed, otherwise only fill blanks (keeps your edits)
     db.run("UPDATE documents SET status='processing' WHERE id=?", (doc_id,))
-    worker.submit(process_document, doc_id, "full" if row["status"] != "ok" else "fill")
+    worker.submit(process_document, doc_id, "full" if row["status"] != "ok" else "fill-keep")
     db.log_activity(user["id"], "add page", f"{label or 'page'} → {row['title']}", security.client_ip(request))
     return {"id": pid}
 
@@ -768,7 +783,7 @@ def share_zip(ids: str, request: Request, user=Depends(security.require_user)):
     db.log_activity(user["id"], "ticket pack", f"{len(docs)} doc(s)", security.client_ip(request))
     fn = f"{export.safe_name(db.get_setting(user['id'], 'full_name') or user['username'])} - ticket pack {date.today():%Y-%m-%d}.zip"
     return Response(data, media_type="application/zip",
-                    headers={"Content-Disposition": f'attachment; filename="{fn}"', "Cache-Control": "no-store"})
+                    headers={"Content-Disposition": attachment(fn), "Cache-Control": "no-store"})
 
 
 @app.get("/api/share/pack.pdf")
@@ -783,7 +798,7 @@ def share_pack_pdf(ids: str, request: Request, user=Depends(security.require_use
     db.log_activity(user["id"], "ticket pack PDF", f"{len(docs)} doc(s)", security.client_ip(request))
     fn = f"{export.safe_name(db.get_setting(user['id'], 'full_name') or user['username'])} - tickets {date.today():%Y-%m-%d}.pdf"
     return Response(data, media_type="application/pdf",
-                    headers={"Content-Disposition": f'attachment; filename="{fn}"', "Cache-Control": "no-store"})
+                    headers={"Content-Disposition": attachment(fn), "Cache-Control": "no-store"})
 
 
 @app.get("/api/share/text")
@@ -857,6 +872,9 @@ class FolderIn(BaseModel):
 def create_folder(body: FolderIn, user=Depends(security.require_user)):
     if not body.name:
         raise HTTPException(400, "Give the folder a name")
+    for v in (body.icon, body.color):
+        if v and not re.fullmatch(r"[a-z0-9_]{1,40}", v):
+            raise HTTPException(400, "Bad icon/colour")
     if db.q1("SELECT 1 FROM collections WHERE user_id=? AND name=?", (user["id"], body.name.strip())):
         raise HTTPException(400, "A folder with that name already exists")
     reqs = ",".join(r for r in (body.requirements or []) if r in CATEGORY_BY_ID)
@@ -870,6 +888,9 @@ def update_folder(cid: int, body: FolderIn, user=Depends(security.require_user))
     if not db.q1("SELECT 1 FROM collections WHERE id=? AND user_id=?", (cid, user["id"])):
         raise HTTPException(404)
     data = body.model_dump(exclude_unset=True)
+    for k in ("icon", "color"):
+        if k in data and data[k] and not re.fullmatch(r"[a-z0-9_]{1,40}", data[k]):
+            raise HTTPException(400, f"Bad {k}")
     if "requirements" in data:
         data["requirements"] = ",".join(r for r in (data["requirements"] or []) if r in CATEGORY_BY_ID) or None
     if "name" in data and data["name"]:
@@ -1030,7 +1051,7 @@ def calendar_all(ids: str | None = None, user=Depends(security.require_user)):
     body = share.ics(rows, db.get_setting(user["id"], "reminder_days") or scheduler.DEFAULT_DAYS)
     name = "certvault-expiries.ics" if not ids else "certvault-reminder.ics"
     return Response(body, media_type="text/calendar; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+                    headers={"Content-Disposition": attachment(name), "Cache-Control": "no-store"})
 
 
 # ---- activity log ---------------------------------------------------------------------------------
@@ -1194,14 +1215,14 @@ def master(user=Depends(security.require_user)):
 def master_xlsx(user=Depends(security.require_user)):
     fn = f"{export.safe_name(user['username'])} - CertVault Master List {date.today():%Y-%m-%d}.xlsx"
     return Response(export.xlsx_bytes(user["id"], user["username"]), media_type=extract.XLSX_MIME,
-                    headers={"Content-Disposition": f'attachment; filename="{fn}"', "Cache-Control": "no-store"})
+                    headers={"Content-Disposition": attachment(fn), "Cache-Control": "no-store"})
 
 
 @app.get("/api/master.csv")
 def master_csv(user=Depends(security.require_user)):
     fn = f"{export.safe_name(user['username'])} - CertVault Master List {date.today():%Y-%m-%d}.csv"
     return Response(export.csv_text(user["id"]), media_type="text/csv; charset=utf-8",
-                    headers={"Content-Disposition": f'attachment; filename="{fn}"', "Cache-Control": "no-store"})
+                    headers={"Content-Disposition": attachment(fn), "Cache-Control": "no-store"})
 
 
 # ---- settings -------------------------------------------------------------------------
@@ -1282,7 +1303,10 @@ def test_notify(user=Depends(security.require_user)):
         ok = notify.send(user["id"], "CertVault test", "Notifications are working 👍", False,
                          db.get_setting(0, "public_url"))
     except Exception as e:
-        raise HTTPException(400, str(e))
+        msg = str(e)
+        if not user["is_admin"] and "No notification channel" not in msg:
+            msg = "Couldn't send — check the ntfy / webhook address (ask the admin to look at the logs)"
+        raise HTTPException(400, msg)
     return {"sent": ok}
 
 
@@ -1335,6 +1359,13 @@ def delete_user(uid: int, user=Depends(security.require_admin)):
         if r["file_ext"]:
             (config.FILES_DIR / f"{r['id']}.{r['file_ext']}").unlink(missing_ok=True)
         thumb_path(r["id"]).unlink(missing_ok=True)
+    for r in db.q("SELECT id FROM documents WHERE user_id=?", (uid,)):
+        pdfconv.combined_path(r["id"]).unlink(missing_ok=True)
+    victim = db.q1("SELECT username FROM users WHERE id=?", (uid,))
+    if victim:
+        shutil.rmtree(config.DATA_DIR / "library" / naming.user_folder(uid, victim["username"]), ignore_errors=True)
+        for f in (config.DATA_DIR / "exports").glob(f"*({uid}) - CertVault Master List.*"):
+            f.unlink(missing_ok=True)
     db.run("DELETE FROM users WHERE id=?", (uid,))
     return {"ok": True}
 

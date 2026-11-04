@@ -115,21 +115,38 @@ def preview(user_id: int, s: dict) -> list[str]:
 
 # ---- auto-named library copy on the NAS --------------------------------------------------
 
-def _link_or_copy(src: Path, dst: Path) -> None:
+def _copy(src: Path, dst: Path) -> None:
+    """Independent copy (never a hard link): editing a library file over SMB can't touch the vault's original."""
+    tmp = dst.with_name(f".{dst.name}.part")
+    shutil.copy2(src, tmp)
+    tmp.replace(dst)
+
+
+def _same(src: Path, dst: Path) -> bool:
     try:
-        os.link(src, dst)  # hard link: no extra disk space
+        a, b = src.stat(), dst.stat()
+        return a.st_size == b.st_size and int(a.st_mtime) == int(b.st_mtime) and b.st_nlink == 1
     except OSError:
-        shutil.copy2(src, dst)
+        return False
+
+
+def user_folder(user_id: int, username: str) -> str:
+    from .export import safe_name
+    return f"{safe_name(username)} ({user_id})"
 
 
 def write_library(user_id: int) -> None:
-    """/data/library/<user>/<Group>/<Type>/<nice name>.<ext> — browse it over SMB, always matches the app."""
-    from .export import safe_name
+    """/data/library/<user (id)>/<Group>/<Type>/<nice name>.<ext> — browse it over SMB, always matches the app.
+    These are independent copies: changing or deleting them never affects what's stored in CertVault."""
     u = db.q1("SELECT username FROM users WHERE id=?", (user_id,))
     if not u:
         return
     s = settings(user_id)
-    root = config.DATA_DIR / "library" / safe_name(u["username"])
+    root = config.DATA_DIR / "library" / user_folder(user_id, u["username"])
+    from .export import safe_name
+    legacy = config.DATA_DIR / "library" / safe_name(u["username"])  # pre-1.8 layout
+    if legacy.exists() and legacy != root and not db.q1("SELECT 1 FROM users WHERE id<>? AND username=?", (user_id, u["username"])):
+        shutil.rmtree(legacy, ignore_errors=True)
     if s.get("library") != "1":
         shutil.rmtree(root, ignore_errors=True)
         return
@@ -166,14 +183,11 @@ def write_library(user_id: int) -> None:
     # sync: add missing / changed, remove stale
     for dst, src in want.items():
         dst.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            if dst.exists() and os.path.samefile(dst, src):
-                continue
-        except OSError:
-            pass
+        if dst.exists() and _same(src, dst):
+            continue
         if dst.exists():
             dst.unlink()
-        _link_or_copy(src, dst)
+        _copy(src, dst)
     if root.exists():
         for f in sorted(root.rglob("*"), reverse=True):
             if f.is_file() and f not in want:

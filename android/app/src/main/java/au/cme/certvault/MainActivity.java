@@ -73,6 +73,7 @@ public class MainActivity extends AppCompatActivity {
 
     static final String PREFS = "certvault";
     static final String KEY_SERVER = "server";
+    static final String KEY_INSTANCE = "instance";
     private static final int REQ_FILE = 1001;
     private static final Pattern FILE_URL = Pattern.compile(
             "^/api/(documents/[^/]+/(file|pdf)|documents/[^/]+/pages/[^/]+/file|share/(zip|pack\\.pdf)|master\\.(xlsx|csv)|calendar\\.ics)");
@@ -115,12 +116,13 @@ public class MainActivity extends AppCompatActivity {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         server = prefs.getString(KEY_SERVER, null);
         handleShareIntent(getIntent());
+        cleanCache();
         if (server == null) {
             askServer(false);
-        } else if (savedInstanceState != null) {
+        } else if (savedInstanceState != null && prefs.getString(KEY_INSTANCE, null) != null) {
             web.restoreState(savedInstanceState);
         } else {
-            web.loadUrl(server + "/");
+            startLoad();
         }
 
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -178,12 +180,89 @@ public class MainActivity extends AppCompatActivity {
                     if (!v.startsWith("http://") && !v.startsWith("https://")) v = "http://" + v;
                     while (v.endsWith("/")) v = v.substring(0, v.length() - 1);
                     server = v;
-                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_SERVER, v).apply();
+                    // new address: forget the old server's identity, pin the new one on first contact
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(KEY_SERVER, v).remove(KEY_INSTANCE).apply();
                     pageReady = false;
-                    web.loadUrl(v + "/");
+                    startLoad();
                 });
         if (cancelable) b.setNegativeButton("Cancel", null);
         b.show();
+    }
+
+    /** Fetch the server's identity WITHOUT sending our login cookie. */
+    static String fetchInstance(String server) {
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(server + "/api/status").openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(8000);
+            c.setUseCaches(false);
+            if (c.getResponseCode() != 200) return null;
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+            }
+            return new JSONObject(sb.toString()).optString("instance", null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Only load (and so only send the login cookie to) the server we paired with. On another Wi-Fi, a
+     * different device answering at 192.168.0.50 gets nothing.
+     */
+    void startLoad() {
+        if (server == null) {
+            askServer(false);
+            return;
+        }
+        final String target = server;
+        io.execute(() -> {
+            String inst = fetchInstance(target);
+            SharedPreferences p = getSharedPreferences(PREFS, MODE_PRIVATE);
+            String pinned = p.getString(KEY_INSTANCE, null);
+            ui.post(() -> {
+                if (inst == null) {
+                    showError("Can't reach CertVault", escape(target) + " isn't answering.<br>Check you're on the home Wi-Fi (or Tailscale is on) and the NAS is running.", false);
+                } else if (pinned == null || pinned.equals(inst)) {
+                    if (pinned == null) p.edit().putString(KEY_INSTANCE, inst).apply();
+                    web.loadUrl(target + "/");
+                } else {
+                    showError("This isn't your CertVault", "Something else is answering at " + escape(target)
+                            + " — maybe you're on a different Wi-Fi. Your login wasn't sent to it.", true);
+                }
+            });
+        });
+    }
+
+    void showError(String title, String bodyHtml, boolean offerTrust) {
+        String html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'><style>"
+                + "body{font-family:sans-serif;padding:32px 24px;color:#191c20;background:#f9f9ff}"
+                + "@media(prefers-color-scheme:dark){body{color:#e2e2e9;background:#111318}}"
+                + "button{display:block;width:100%;margin-top:14px;height:48px;border:0;border-radius:24px;font-size:15px;background:#415f91;color:#fff}"
+                + "button.t{background:transparent;color:#415f91;border:1px solid #74777f}</style></head><body>"
+                + "<h2>" + title + "</h2><p>" + bodyHtml + "</p>"
+                + "<button onclick='CertVaultAndroid.retry()'>Try again</button>"
+                + "<button class='t' onclick='CertVaultAndroid.changeServer()'>Change server address</button>"
+                + (offerTrust ? "<button class='t' onclick='CertVaultAndroid.trustServer()'>I reinstalled CertVault — trust this server</button>" : "")
+                + "</body></html>";
+        web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+    }
+
+    void cleanCache() {
+        long cutoff = System.currentTimeMillis() - 24L * 3600 * 1000;
+        for (String d : new String[]{"open", "share", "camera"}) {
+            deleteOld(new File(getCacheDir(), d), cutoff);
+        }
+    }
+
+    static void deleteOld(File f, long cutoff) {
+        if (f == null || !f.exists()) return;
+        File[] kids = f.listFiles();
+        if (kids != null) for (File k : kids) deleteOld(k, cutoff);
+        if (f.isFile() && f.lastModified() < cutoff) f.delete();
+        else if (f.isDirectory() && (kids == null || kids.length == 0) && f.lastModified() < cutoff) f.delete();
     }
 
     boolean sameOrigin(Uri u) {
@@ -224,16 +303,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onReceivedError(WebView view, WebResourceRequest req, WebResourceError err) {
             if (!req.isForMainFrame()) return;
-            String html = "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'><style>"
-                    + "body{font-family:sans-serif;padding:32px 24px;color:#191c20;background:#f9f9ff}"
-                    + "@media(prefers-color-scheme:dark){body{color:#e2e2e9;background:#111318}}"
-                    + "button{display:block;width:100%;margin-top:14px;height:48px;border:0;border-radius:24px;font-size:15px;background:#415f91;color:#fff}"
-                    + "button.t{background:transparent;color:#415f91;border:1px solid #74777f}</style></head><body>"
-                    + "<h2>Can't reach CertVault</h2><p>" + escape(server) + " isn't answering.</p>"
-                    + "<p>Check you're on the home Wi-Fi (or Tailscale is on) and the NAS is running.</p>"
-                    + "<button onclick='location.href=\"" + escape(server) + "/\"'>Try again</button>"
-                    + "<button class='t' onclick='CertVaultAndroid.changeServer()'>Change server address</button></body></html>";
-            view.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+            showError("Can't reach CertVault", escape(server) + " isn't answering.<br>Check you're on the home Wi-Fi (or Tailscale is on) and the NAS is running.", false);
         }
     }
 
@@ -426,6 +496,23 @@ public class MainActivity extends AppCompatActivity {
         }
 
         @JavascriptInterface
+        public void retry() {
+            ui.post(MainActivity.this::startLoad);
+        }
+
+        @JavascriptInterface
+        public void trustServer() {
+            ui.post(() -> new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("Trust this server?")
+                    .setMessage("Only do this if you reinstalled or restored CertVault on your NAS. Otherwise you could be sending your login to someone else's device.")
+                    .setPositiveButton("Trust it", (d, w) -> {
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove(KEY_INSTANCE).apply();
+                        startLoad();
+                    })
+                    .setNegativeButton("Cancel", null).show());
+        }
+
+        @JavascriptInterface
         public void openExternal(String url) {
             ui.post(() -> {
                 try {
@@ -449,6 +536,7 @@ public class MainActivity extends AppCompatActivity {
                         JSONObject o = arr.getJSONObject(i);
                         String url = o.getString("url");
                         if (url.startsWith("/")) url = server + url;
+                        if (!sameOrigin(Uri.parse(url))) continue;  // only ever fetch from our own server
                         Fetched f = fetch(url, dir);
                         String want = o.optString("name", null);
                         if (want != null && !want.isEmpty()) {
@@ -485,12 +573,13 @@ public class MainActivity extends AppCompatActivity {
     void handleShareIntent(Intent i) {
         if (i == null) return;
         String a = i.getAction();
+        String own = getPackageName() + ".files";
         if (Intent.ACTION_SEND.equals(a)) {
             Uri u = i.getParcelableExtra(Intent.EXTRA_STREAM);
-            if (u != null) pendingShare.add(u);
+            if (u != null && !own.equals(u.getAuthority())) pendingShare.add(u);
         } else if (Intent.ACTION_SEND_MULTIPLE.equals(a)) {
             ArrayList<Uri> list = i.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
-            if (list != null) pendingShare.addAll(list);
+            if (list != null) for (Uri u : list) if (u != null && !own.equals(u.getAuthority())) pendingShare.add(u);
         }
         i.setAction(Intent.ACTION_MAIN);
     }
@@ -502,6 +591,11 @@ public class MainActivity extends AppCompatActivity {
         toast("Saving " + items.size() + " file" + (items.size() == 1 ? "" : "s") + " to CertVault…");
         io.execute(() -> {
             try {
+                String pinned = getSharedPreferences(PREFS, MODE_PRIVATE).getString(KEY_INSTANCE, null);
+                if (pinned == null || !pinned.equals(fetchInstance(server))) {
+                    ui.post(() -> toast("Not connected to your CertVault — upload cancelled"));
+                    return;
+                }
                 String csrf = csrfToken();
                 if (csrf == null) {
                     ui.post(() -> {

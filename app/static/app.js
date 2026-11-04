@@ -4,7 +4,7 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const icon = (n, cls = "") => `<svg class="icon ${cls}" aria-hidden="true"><use href="/static/icons.svg#${n}"/></svg>`;
+const icon = (n, cls = "") => `<svg class="icon ${cls}" aria-hidden="true"><use href="/static/icons.svg#${String(n || "description").replace(/[^a-z0-9_-]/gi, "")}"/></svg>`;
 const app = $("#app");
 
 const S = { me: null, docs: [], cats: [], catById: {}, filter: "all", query: "", pollTimer: null };

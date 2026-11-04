@@ -51,11 +51,14 @@ def soffice_available() -> bool:
 def _soffice(src: Path, outdir: Path) -> Path | None:
     if not soffice_available():
         return None
-    profile = config.DATA_DIR / "tmp" / "lo-profile"
+    profile = outdir / f"lo-{uuid.uuid4().hex[:8]}"  # own profile per call: parallel conversions can't clash
     profile.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "HOME": str(profile)}
-    r = _run(["soffice", f"-env:UserInstallation=file://{profile}", "--headless", "--norestore",
-              "--convert-to", "pdf", "--outdir", str(outdir), str(src)], timeout=240, env=env)
+    try:
+        r = _run(["soffice", f"-env:UserInstallation=file://{profile}", "--headless", "--norestore",
+                  "--convert-to", "pdf", "--outdir", str(outdir), str(src)], timeout=240, env=env)
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
     out = outdir / (src.stem + ".pdf")
     if r.returncode != 0 or not out.exists():
         log.warning("LibreOffice couldn't convert %s: %s", src.name, r.stderr[-300:])
@@ -244,7 +247,7 @@ def build_combined(doc, pages) -> Path | None:
             return None
         merged = _unite(parts, work)
         dest = combined_path(doc["id"])
-        tmp = dest.with_suffix(".tmp")
+        tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex[:8]}.tmp")
         shutil.copyfile(merged, tmp)
         tmp.replace(dest)
         return dest

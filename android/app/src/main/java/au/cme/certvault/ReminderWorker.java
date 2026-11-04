@@ -51,6 +51,9 @@ public class ReminderWorker extends Worker {
         String server = prefs.getString(MainActivity.KEY_SERVER, null);
         if (server == null) return Result.success();
         try {
+            // never send the login cookie to a device that isn't the paired CertVault (e.g. on another Wi-Fi)
+            String pinned = prefs.getString(MainActivity.KEY_INSTANCE, null);
+            if (pinned == null || !pinned.equals(MainActivity.fetchInstance(server))) return Result.success();
             String cookie = CookieManager.getInstance().getCookie(server);
             if (cookie == null) return Result.success();
             HttpURLConnection c = (HttpURLConnection) new URL(server + "/api/documents").openConnection();

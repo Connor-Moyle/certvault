@@ -260,7 +260,7 @@ def _ocr_best(variants) -> tuple[str, float, float]:
         for psm in (3, 6, 4):
             try:
                 data = pytesseract.image_to_data(img, lang="eng", config=f"--psm {psm} --oem 1",
-                                                 output_type=pytesseract.Output.DICT)
+                                                 output_type=pytesseract.Output.DICT, timeout=90)
             except Exception:
                 continue
             lines: dict = {}
@@ -306,7 +306,7 @@ def ocr_image(img: Image.Image) -> str:
         g.thumbnail((3600, 3600), Image.LANCZOS)
     candidates = [g]
     try:
-        osd = pytesseract.image_to_osd(g, output_type=pytesseract.Output.DICT)
+        osd = pytesseract.image_to_osd(g, output_type=pytesseract.Output.DICT, timeout=30)
         rot = int(osd.get("rotate", 0))
         if rot:  # OSD is unreliable on sparse cards — try both and let the confidence score decide
             candidates.append(g.rotate(-rot, expand=True))

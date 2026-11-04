@@ -22,15 +22,24 @@ def group_key(d) -> str | None:
     # a renewed licence/HRWL/policy keeps its number — group on that when the type is specific
     if num and len(num) >= 5 and cat not in ("other", "other_register", "training", "asset_receipt"):
         return f"{cat}#{num}"
-    t = _norm(d["title"])
-    if not t:
+    # generic / uncategorised documents are never merged on title alone (two "image.jpg" uploads aren't renewals)
+    if cat in ("other", "other_register", "training", "asset_receipt", "biz_contract") or not d["category"]:
         return None
-    issuer = _norm(d["issuer"]) if cat in ("site_induction", "other", "other_register", "training") else ""
+    t = _norm(d["title"])
+    stem = _norm((d.get("original_name") if isinstance(d, dict) else d["original_name"]) or "")
+    stem = re.sub(r"(pdf|jpe?g|png|heic|webp|tiff?|docx?|xlsx?)$", "", stem)
+    if not t or (stem and t == stem) or len(t) < 4:
+        return None
+    issuer = _norm(d["issuer"]) if cat in ("site_induction", "biz_onboarding") else ""
+    if cat in ("site_induction", "biz_onboarding") and not issuer:
+        return None
     return f"{cat}|{t}|{issuer}"
 
 
 def _rank(d):
-    return (d["expiry_date"] or "", d["completion_date"] or "", d["created_at"] or "")
+    # newest issue/completion wins; fall back to expiry, then upload time
+    issued = d["completion_date"] or (d["created_at"] or "")[:10]
+    return (issued, d["expiry_date"] or "", d["created_at"] or "")
 
 
 def annotate(docs: list[dict]) -> list[dict]:

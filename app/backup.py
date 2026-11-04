@@ -102,7 +102,13 @@ def apply_pending_restore() -> bool:
     keep = config.DATA_DIR / BACKUP_DIR_NAME / f"before-restore-{datetime.now():%Y-%m-%d-%H%M}"
     keep.mkdir(parents=True, exist_ok=True)
     if config.DB_PATH.exists():
-        shutil.copy2(config.DB_PATH, keep / "certvault.db")
+        try:  # consistent copy including anything still in the WAL
+            _db_copy(keep / "certvault.db")
+        except Exception:
+            shutil.copy2(config.DB_PATH, keep / "certvault.db")
+            for side in ("-wal", "-shm"):
+                if Path(str(config.DB_PATH) + side).exists():
+                    shutil.copy2(str(config.DB_PATH) + side, keep / f"certvault.db{side}")
     for side in ("-wal", "-shm"):
         Path(str(config.DB_PATH) + side).unlink(missing_ok=True)
     shutil.move(str(stage / "certvault.db"), config.DB_PATH)
@@ -121,4 +127,4 @@ def apply_pending_restore() -> bool:
 
 def restart_soon(delay: float = 1.5) -> None:
     """Exit so Docker/TrueNAS restarts the app (restart: unless-stopped) and the restore is applied."""
-    threading.Timer(delay, lambda: os._exit(0)).start()
+    threading.Timer(delay, lambda: os._exit(3)).start()  # non-zero: restarts under any restart policy

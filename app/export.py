@@ -203,7 +203,9 @@ def write_master(user_id: int) -> None:
             return
         d = config.DATA_DIR / "exports"
         d.mkdir(exist_ok=True)
-        base = f"{safe_name(u['username'])} - CertVault Master List"
+        base = f"{safe_name(u['username'])} ({user_id}) - CertVault Master List"
+        for ext in ("xlsx", "csv"):  # pre-1.8 name
+            (d / f"{safe_name(u['username'])} - CertVault Master List.{ext}").unlink(missing_ok=True)
         tmp = d / f".{base}.xlsx.tmp"
         tmp.write_bytes(xlsx_bytes(user_id, u["username"]))
         tmp.replace(d / f"{base}.xlsx")
