@@ -12,7 +12,10 @@ history_edu directions_car license construction medical_services ecg_heart stair
 forklift cell_tower traffic electric_bolt local_police family_restroom id_card how_to_reg school anchor
 notifications_active shield_lock event_busy event_available photo_camera category
 fact_check fact_check-fill inventory_2 table_view list_alt list_alt-fill checklist print electrical_services precision_manufacturing
-share flip calendar_add_on folder_zip work autorenew payments sell content_copy check_box check_box_outline_blank select_check_box verified_user deselect person_book""".split()
+share flip calendar_add_on folder_zip work autorenew payments sell content_copy check_box check_box_outline_blank select_check_box verified_user deselect person_book
+shield health_and_safety umbrella car_crash car_repair minor_crash build_circle business_center handshake contract
+assignment_turned_in passport receipt_long speed fire_extinguisher card_membership medical_information hearing home_work
+update event_repeat note_add""".split()
 
 src = Path(sys.argv[1])
 out = ['<svg xmlns="http://www.w3.org/2000/svg">']

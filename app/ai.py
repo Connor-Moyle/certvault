@@ -31,7 +31,7 @@ DEFAULTS = {
     "ollama_model": "qwen2.5vl:7b",
 }
 
-FIELDS = ["transcript", "title", "category", "issuer", "issuer_type", "holder_name", "licence_number",
+FIELDS = ["transcript", "cost", "title", "category", "issuer", "issuer_type", "holder_name", "licence_number",
           "completion_date", "expiry_date", "expiry_estimated", "no_expiry", "location", "notes", "classes", "rto_code"]
 
 
@@ -55,8 +55,11 @@ def build_prompt(ocr_text: str) -> str:
         f'  - "{c["id"]}": {c["name"]}' + (" [REGISTER]" if c["kind"] == "register" else "")
         + (f' (typically valid {c["validity_years"]} yr)' if c["validity_years"] else "")
         for c in CATEGORIES)
-    return f"""You are reading a scanned/photographed Australian (usually Western Australian) licence, ticket,
-certificate, statement of attainment or site induction card. Today's date is {date.today().isoformat()}.
+    return f"""You are reading a scanned/photographed Australian (usually Western Australian) document that has an expiry,
+renewal or due date: a licence, ticket, certificate, statement of attainment, site induction card, equipment
+register, insurance policy / certificate of currency, vehicle registration or service record, business document
+(ABN, contract, supplier onboarding, SWMS), ID document, warranty / receipt / calibration certificate, membership,
+or a work medical. Today's date is {date.today().isoformat()}.
 
 Look carefully at the image(s) and extract the details. OCR text is provided as a hint but it may contain errors -
 trust what you can see in the image over the OCR.
@@ -78,6 +81,7 @@ Return ONLY a JSON object with exactly these keys:
              (e.g. "CV – Vehicle loading crane (10 metre-tonnes or more); DG – Dogging; RB – Basic rigging"
              or "C – Car; HR – Heavy rigid") or null,
   "rto_code": the RTO / training provider number if printed, or null,
+  "cost": price / premium / fee paid if printed (e.g. "$1,240.00"), or null,
   "notes": anything else useful in one line (conditions, restrictions, endorsements, unit codes) or null,
   "transcript": a clean, correctly spelled transcription of ALL readable text on the document (every side/page),
                 laid out line by line as it appears, fixing OCR mistakes. Leave out signatures/barcodes. Max ~3000 characters.
@@ -92,6 +96,12 @@ Rules:
   Licence classes and expiry dates are often on the back.
 - High Risk Work Licence class codes (list EVERY class shown, with its name):
   {HRWL_LIST}
+- INSURANCE: issuer = insurer, licence_number = policy number, completion_date = period start,
+  expiry_date = period end / renewal date, notes = cover amount(s) and what's insured.
+- VEHICLES: licence_number = plate (and VIN if shown), expiry_date = rego expiry or next service/inspection due
+  (if a service sticker gives km only, put the km in notes).
+- WARRANTIES / RECEIPTS: completion_date = purchase date, expiry_date = warranty end (purchase date + warranty
+  period), licence_number = serial or receipt number, issuer = retailer, cost = price.
 - REGISTERS (equipment / inspection registers such as a rigging gear register, harness register, test & tag register,
   plant register): use a [REGISTER] category. completion_date = the most recent inspection date, expiry_date = the
   EARLIEST upcoming "next inspection / retest / due" date of any item in it, issuer = who keeps or inspects it,
@@ -152,7 +162,7 @@ def clean(result: dict) -> dict:
         out["issuer_type"] = None
     if out.get("transcript") and isinstance(out["transcript"], str):
         out["transcript"] = out["transcript"][:6000]
-    for k in ("title", "issuer", "holder_name", "licence_number", "location", "notes", "classes", "rto_code"):
+    for k in ("title", "issuer", "holder_name", "licence_number", "location", "notes", "classes", "rto_code", "cost"):
         if out.get(k) and not isinstance(out[k], str):
             out[k] = str(out[k])
         if out.get(k):

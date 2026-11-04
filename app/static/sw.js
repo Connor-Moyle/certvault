@@ -1,6 +1,6 @@
 // Minimal service worker: caches the app shell so it opens instantly. API data is never cached.
-const CACHE = "certvault-v5";
-const SHELL = ["/", "/static/app.css?v=5", "/static/app.js?v=5", "/static/theme.js?v=5", "/static/icons.svg", "/static/icon.svg"];
+const CACHE = "certvault-v6";
+const SHELL = ["/", "/static/app.css?v=6", "/static/app.js?v=6", "/static/theme.js?v=6", "/static/icons.svg", "/static/icon.svg"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))))); self.clients.claim(); });
 self.addEventListener("fetch", (e) => {

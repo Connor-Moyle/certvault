@@ -1,6 +1,6 @@
 # CertVault
 
-Self-hosted vault for your **licences, tickets, certificates and site inductions**. It runs on your NAS.
+Self-hosted vault for **everything that expires or needs renewing**. It runs on your NAS and covers licences, tickets, certificates, site inductions, equipment registers, insurance, vehicle rego and servicing, business documents, ID, warranties, calibrations, memberships and work medicals.
 Upload a photo or PDF. **AI reads the file and fills in the details**: type, who issued it, holder, number, completion date, expiry date and location. You get **phone notifications 30, 14 and 7 days before expiry and on the day** (you can change these).
 
 <p>
@@ -13,6 +13,9 @@ Upload a photo or PDF. **AI reads the file and fills in the details**: type, who
 - **Import a whole folder.** Tap **Import folder** (or drag a folder onto the page on a PC). Every PDF, photo and register spreadsheet inside, including sub-folders, is uploaded in batches. Duplicates are skipped and non-cert files ignored.
 - **Registers.** Rigging gear, height safety gear, test & tag, plant/equipment and other registers, as PDF, photo or **Excel/CSV**. The last inspection date and the earliest *next inspection due* date are pulled out, and reminders say "inspection due" instead of "expires".
 - **Renewals / previous versions.** Upload a renewed ticket and it's grouped with the older copies of the same cert. Only the newest sends reminders. The ⋮ menu on a document shows **Previous / expired versions**, and you can mark one *Not a renewal — keep separate*.
+- **More than certs.** Document types are grouped into *Tickets & licences*, *Registers*, *Insurance* (public liability / certificate of currency, workers comp, income protection, PI, vehicle, tools, home), *Vehicles* (rego, servicing, inspections), *Business* (ABN, contracts, client/supplier onboarding, SWMS), *Personal ID* (passport, other ID), *Warranties & equipment* (warranties, receipts, calibration certs, fire extinguisher service, memberships) and *Work medicals*. Labels change to suit each one, e.g. *Insurer / Policy number / Renewal date*.
+- **Add without a file.** Track a service, subscription, BAS or anything with a date. Attach a file later if you want.
+- **Mark renewed / done.** One tap rolls the due date forward by its renewal period (e.g. rego +12 months, service +6). It counts from the old due date, so you don't lose days.
 - **Front & back / multi-page.** Turn on *Front & back of one card* and take the front, then the back. Or add a back/extra page to any document later. The AI and OCR read every side.
 - **Licence classes decoded.** HRWL classes are picked up and spelled out (e.g. **CV – Vehicle loading crane**, DG – Dogging, RB – Basic rigging, WP – Boom-type EWP). WA driver's licence classes (C, LR, MR, HR, HC, MC, R) work the same way. You can also type just the codes when editing and they're expanded for you.
 - **More detail per document:** classes/endorsements, RTO code, *required for* (clients/sites), how to renew, cost, tags.

@@ -15,12 +15,12 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from . import config, db, scheduler, versions
-from .categories import CATEGORY_BY_ID
+from .categories import CATEGORY_BY_ID, KINDS
 
 log = logging.getLogger("certvault.export")
 
 COLUMNS = [
-    ("Status", 12), ("Days left", 9), ("Version", 10), ("Title", 40), ("Kind", 10), ("Type", 26), ("Issued by", 30),
+    ("Status", 12), ("Days left", 9), ("Version", 10), ("Title", 40), ("Kind", 18), ("Type", 26), ("Issued by", 30),
     ("Issuer type", 16), ("Holder", 22), ("Number", 18), ("Completed / last inspected", 16),
     ("Expiry / next due", 16), ("Expiry estimated", 10), ("Doesn't expire", 10), ("Location", 26),
     ("Classes / endorsements", 40), ("RTO code", 10), ("Cost", 10), ("Tags", 20), ("Required for", 26),
@@ -86,7 +86,7 @@ def rows_for(user_id: int, only_ids: set | None = None) -> list[dict]:
             "Days left": days,
             "Version": "Previous" if r["id"] in old else "Current",
             "Title": r["title"],
-            "Kind": "Register" if cat["kind"] == "register" else "Ticket",
+            "Kind": KINDS[cat["kind"]]["name"],
             "Type": cat["name"],
             "Issued by": r["issuer"],
             "Issuer type": (r["issuer_type"] or "").capitalize() or None,

@@ -18,13 +18,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import ai, config, db, export, extract, notify, scheduler, security, share, versions
-from .categories import CATEGORIES, CATEGORY_BY_ID, is_register
+from .categories import CATEGORIES, CATEGORY_BY_ID, KINDS, is_register, kind_of
 
 logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("certvault")
 
 STATIC = Path(__file__).parent / "static"
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 app = FastAPI(title="CertVault", docs_url=None, redoc_url=None, openapi_url=None)
 worker = ThreadPoolExecutor(max_workers=1)  # one document at a time — gentle on the NAS
@@ -93,6 +93,8 @@ def doc_state(row) -> dict:
     d["icon"] = cat["icon"]
     d["color"] = cat["color"]
     d["kind"] = cat["kind"]
+    d["has_file"] = bool(d["file_ext"])
+    d["renew_months"] = int(d["renew_months"]) if str(d.get("renew_months") or "").isdigit() else None
     return d
 
 
@@ -103,8 +105,8 @@ def get_doc(doc_id: str, user) -> dict:
     return row
 
 
-def file_path(row) -> Path:
-    return config.FILES_DIR / f"{row['id']}.{row['file_ext']}"
+def file_path(row) -> Path | None:
+    return config.FILES_DIR / f"{row['id']}.{row['file_ext']}" if row["file_ext"] else None
 
 
 def thumb_path(doc_id: str) -> Path:
@@ -114,7 +116,7 @@ def thumb_path(doc_id: str) -> Path:
 # fields the reader (OCR / AI) fills in
 EXTRACTED = ["title", "category", "issuer", "issuer_type", "holder_name", "licence_number",
              "completion_date", "expiry_date", "expiry_estimated", "no_expiry", "location", "notes",
-             "classes", "rto_code"]
+             "classes", "rto_code", "cost"]
 
 
 def page_rows(doc_id: str):
@@ -132,6 +134,9 @@ def process_document(doc_id: str, mode: str = "full"):
         return
     path = file_path(row)
     error = None
+    if path is None:  # manual entry without a file
+        db.run("UPDATE documents SET status='ok' WHERE id=? AND status='processing'", (doc_id,))
+        return
     try:
         text = row["ocr_text"]
         if not text:
@@ -166,6 +171,8 @@ def process_document(doc_id: str, mode: str = "full"):
         fields.setdefault("no_expiry", False)
         sets, vals = [], []
         for k in EXTRACTED:
+            if k not in fields:
+                continue
             v = fields.get(k)
             if isinstance(v, bool):
                 v = int(v)
@@ -328,7 +335,8 @@ def logout_others(request: Request, user=Depends(security.require_user)):
 
 @app.get("/api/categories")
 def categories(user=Depends(security.require_user)):
-    return [{k: c[k] for k in ("id", "name", "icon", "color", "validity_years", "kind")} for c in CATEGORIES]
+    return {"categories": [{k: c[k] for k in ("id", "name", "icon", "color", "validity_years", "kind")} for c in CATEGORIES],
+            "kinds": KINDS}
 
 
 @app.get("/api/documents")
@@ -419,6 +427,13 @@ async def add_page(doc_id: str, request: Request, file: UploadFile = File(...), 
         blob, ext, mime, name = await _read_upload(file)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    if not row["file_ext"]:  # manual entry: first file becomes the document itself
+        (config.FILES_DIR / f"{doc_id}.{ext}").write_bytes(blob)
+        has_thumb = extract.make_thumbnail(config.FILES_DIR / f"{doc_id}.{ext}", ext, thumb_path(doc_id))
+        db.run("UPDATE documents SET file_ext=?, mime=?, size=?, sha256=?, has_thumb=?, original_name=?, status='processing' WHERE id=?",
+               (ext, mime, len(blob), hashlib.sha256(blob).hexdigest(), int(has_thumb), name, doc_id))
+        worker.submit(process_document, doc_id, "fill")
+        return {"id": doc_id, "main": True}
     pid = _add_page(doc_id, blob, ext, mime, name, label.strip() or None)
     # re-read with the new side: fully if not yet confirmed, otherwise only fill blanks (keeps your edits)
     db.run("UPDATE documents SET status='processing' WHERE id=?", (doc_id,))
@@ -511,6 +526,7 @@ class DocIn(BaseModel):
     tags: str | None = Field(None, max_length=300)
     required_for: str | None = Field(None, max_length=500)
     renewal_info: str | None = Field(None, max_length=1000)
+    renew_months: int | None = Field(None, ge=0, le=240)
 
 
 @app.patch("/api/documents/{doc_id}")
@@ -557,7 +573,8 @@ def delete_document(doc_id: str, request: Request, user=Depends(security.require
     for p in page_rows(doc_id):
         page_path(p).unlink(missing_ok=True)
         thumb_path(p["id"]).unlink(missing_ok=True)
-    file_path(row).unlink(missing_ok=True)
+    if file_path(row):
+        file_path(row).unlink(missing_ok=True)
     thumb_path(doc_id).unlink(missing_ok=True)
     db.run("DELETE FROM documents WHERE id=?", (doc_id,))
     db.log_activity(user["id"], "delete", row["title"], security.client_ip(request))
@@ -695,9 +712,80 @@ def activity(user=Depends(security.require_user)):
     return [dict(r) for r in rows]
 
 
+class ManualIn(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    category: str = "other"
+    issuer: str | None = Field(None, max_length=300)
+    licence_number: str | None = Field(None, max_length=100)
+    completion_date: str | None = None
+    expiry_date: str | None = None
+    renew_months: int | None = Field(None, ge=0, le=240)
+    notes: str | None = Field(None, max_length=4000)
+
+
+@app.post("/api/documents/manual")
+def create_manual(body: ManualIn, request: Request, user=Depends(security.require_user)):
+    """Track something that has no file (a service due, a subscription, BAS…) — add a file later if you like."""
+    if body.category not in CATEGORY_BY_ID:
+        raise HTTPException(400, "Unknown category")
+    dates = {}
+    for k in ("completion_date", "expiry_date"):
+        v = getattr(body, k)
+        try:
+            dates[k] = date.fromisoformat(v).isoformat() if v else None
+        except ValueError:
+            raise HTTPException(400, f"Bad date for {k}")
+    doc_id = uuid.uuid4().hex
+    db.run("INSERT INTO documents(id, user_id, title, category, issuer, licence_number, completion_date, expiry_date, "
+           "renew_months, notes, status, extract_source) VALUES(?,?,?,?,?,?,?,?,?,?,'ok','manual')",
+           (doc_id, user["id"], body.title.strip(), body.category, body.issuer, body.licence_number,
+            dates["completion_date"], dates["expiry_date"], body.renew_months, body.notes))
+    db.log_activity(user["id"], "add (no file)", body.title, security.client_ip(request))
+    export.write_master(user["id"])
+    return {"id": doc_id}
+
+
+class RenewIn(BaseModel):
+    months: int | None = Field(None, ge=1, le=240)
+    new_expiry: str | None = None
+
+
+@app.post("/api/documents/{doc_id}/renew")
+def renew(doc_id: str, body: RenewIn, request: Request, user=Depends(security.require_user)):
+    """Mark something renewed / done: rolls the due date forward by its renewal period."""
+    row = get_doc(doc_id, user)
+    today = scheduler.today_local()
+    if body.new_expiry:
+        try:
+            new_exp = date.fromisoformat(body.new_expiry)
+        except ValueError:
+            raise HTTPException(400, "Bad date")
+    else:
+        months = body.months or (int(row["renew_months"]) if str(row["renew_months"] or "").isdigit() else None)
+        if not months:
+            vy = CATEGORY_BY_ID.get(row["category"] or "other", CATEGORY_BY_ID["other"])["validity_years"]
+            months = round(vy * 12) if vy else None
+        if not months:
+            raise HTTPException(400, "How often does this renew? Set 'Renews every' on the edit screen.")
+        old = date.fromisoformat(row["expiry_date"]) if row["expiry_date"] else None
+        # renew from the old due date if it's recent/upcoming (rego, insurance), otherwise from today
+        base = old if old and (old - today).days > -60 else today
+        new_exp = extract.add_months(base, months)
+        body.months = months
+    note = f"Renewed {today:%d/%m/%Y} (was due {row['expiry_date'] or '—'})"
+    db.run("UPDATE documents SET completion_date=?, expiry_date=?, expiry_estimated=0, no_expiry=0, renew_months=COALESCE(?, renew_months), "
+           "notes=TRIM(COALESCE(notes,'') || CASE WHEN notes IS NULL OR notes='' THEN '' ELSE char(10) END || ?), "
+           "status='ok', updated_at=datetime('now') WHERE id=?",
+           (today.isoformat(), new_exp.isoformat(), body.months, note, doc_id))
+    db.log_activity(user["id"], "renewed", f"{row['title']} → {new_exp:%d/%m/%Y}", security.client_ip(request))
+    export.write_master(user["id"])
+    return doc_state(get_doc(doc_id, user))
+
+
 @app.post("/api/documents/{doc_id}/rescan")
 def rescan(doc_id: str, user=Depends(security.require_user)):
-    get_doc(doc_id, user)
+    if not get_doc(doc_id, user)["file_ext"]:
+        raise HTTPException(400, "This entry has no file to read — add one first")
     db.run("UPDATE documents SET status='processing', ocr_text=NULL WHERE id=?", (doc_id,))
     worker.submit(process_document, doc_id, "full")
     return {"ok": True}
@@ -705,7 +793,7 @@ def rescan(doc_id: str, user=Depends(security.require_user)):
 
 @app.post("/api/documents-rescan-all")
 def rescan_all(user=Depends(security.require_user)):
-    rows = db.q("SELECT id FROM documents WHERE user_id=? AND status<>'processing'", (user["id"],))
+    rows = db.q("SELECT id FROM documents WHERE user_id=? AND status<>'processing' AND file_ext IS NOT NULL", (user["id"],))
     for r in rows:
         worker.submit(process_document, r["id"], "fill")
     return {"queued": len(rows)}
@@ -714,6 +802,8 @@ def rescan_all(user=Depends(security.require_user)):
 @app.get("/api/documents/{doc_id}/file")
 def get_file(doc_id: str, download: int = 0, user=Depends(security.require_user)):
     row = get_doc(doc_id, user)
+    if not row["file_ext"]:
+        raise HTTPException(404, "No file attached")
     name = (row["title"] or "document").replace('"', "").replace("/", "-")[:80] + "." + row["file_ext"]
     inline = not download and row["file_ext"] not in extract.TEXT_KINDS  # spreadsheets always download
     return FileResponse(file_path(row), media_type=row["mime"], filename=name,
@@ -869,7 +959,8 @@ def delete_user(uid: int, user=Depends(security.require_admin)):
         for p in page_rows(r["id"]):
             page_path(p).unlink(missing_ok=True)
             thumb_path(p["id"]).unlink(missing_ok=True)
-        (config.FILES_DIR / f"{r['id']}.{r['file_ext']}").unlink(missing_ok=True)
+        if r["file_ext"]:
+            (config.FILES_DIR / f"{r['id']}.{r['file_ext']}").unlink(missing_ok=True)
         thumb_path(r["id"]).unlink(missing_ok=True)
     db.run("DELETE FROM users WHERE id=?", (uid,))
     return {"ok": True}

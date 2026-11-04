@@ -483,6 +483,12 @@ def classify_dates(text: str, today: date | None = None) -> dict:
     return {"completion_date": issue, "expiry_date": expiry, "validity_years": validity}
 
 
+def add_months(d: date, months: int) -> date:
+    m = d.month - 1 + months
+    y, m = d.year + m // 12, m % 12 + 1
+    return date(y, m, min(d.day, monthrange(y, m)[1]))
+
+
 def add_years(d: date, years: float) -> date:
     if years != int(years):
         return d + timedelta(days=round(365.25 * years))
@@ -502,7 +508,7 @@ def _code_rx(code: str) -> re.Pattern:
 
 _CODE_RX = {code: _code_rx(code) for c in CATEGORIES for code in c["codes"]}
 _CODE_RX.update({code: _code_rx(code) for code in UNIT_TITLES})
-WEAK_CATEGORIES = {"training", "site_induction", "other_register"}  # generic words, only win if nothing specific matches
+WEAK_CATEGORIES = {"training", "site_induction", "other_register", "ins_other", "asset_receipt", "membership"}  # generic words, only win if nothing specific matches
 
 
 def has_code(upper: str, code: str) -> bool:
@@ -563,12 +569,20 @@ def detect_holder(text: str) -> str | None:
 
 
 def detect_number(text: str) -> str | None:
-    m = re.search(
-        r"(?:licen[cs]e|certificate|card|cert|soa|statement|registration|reg|member|student|ref)\s*"
-        r"(?:no\.?|number|#|id)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-/]{3,20})", text, re.I)
-    if m and re.search(r"\d", m.group(1)):
-        return m.group(1).upper()
+    rx = re.compile(
+        r"\b(?:licen[cs]e|certificate|card|cert|soa|statement|registration|reg|member|student|ref|policy|plate|serial|"
+        r"vin|invoice|receipt|passport|document|account|abn)\b[ \t]*"
+        r"(?:no\.?|number|#|id)?[ \t]*[:\-]?[ \t]*([A-Z0-9][A-Z0-9\-/]{3,20})", re.I)
+    for m in rx.finditer(text):
+        if re.search(r"\d", m.group(1)):
+            return m.group(1).upper()
     return None
+
+
+def detect_cost(text: str) -> str | None:
+    m = re.search(r"(?:premium|total|amount paid|amount due|price|fee paid|cost|licence fee)\s*(?:\(inc\.? ?gst\))?\s*[:\-]?\s*"
+                  r"(\$\s?\d[\d,]*(?:\.\d{2})?)", text, re.I)
+    return m.group(1).replace(" ", "") if m else None
 
 
 def detect_location(text: str) -> str | None:
@@ -661,5 +675,6 @@ def rule_extract(text: str, today: date | None = None) -> dict:
         "location": detect_location(text),
         "notes": notes,
         "classes": detect_classes(text, cat),
+        "cost": detect_cost(text),
         "rto_code": rto,
     }

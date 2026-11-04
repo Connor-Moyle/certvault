@@ -83,3 +83,16 @@ def test_hrwl_classes():
 def test_driver_classes():
     r = rule_extract("WESTERN AUSTRALIA DRIVER'S LICENCE\nClass: C, HR\nExpiry 12 JUN 2029", TODAY)
     assert r["classes"].startswith("C – Car") and "HR – Heavy rigid" in r["classes"]
+
+def test_broader_categories():
+    cases = {
+        "CERTIFICATE OF CURRENCY\nPublic Liability $20,000,000\nPolicy number BZ-12345\nPeriod of insurance 01/07/2026 to 01/07/2027": "ins_public_liability",
+        "Department of Transport\nMotor Vehicle Licence\nPlate number 1ABC234\nLicence fee paid\nExpiry 15/03/2027": "veh_rego",
+        "Logbook service completed\nOdometer 182,450 km\nNext service due 10/05/2027": "veh_service",
+        "Certificate of calibration\nGas detector Dräger X-am 2500\nCalibrated 01/10/2026\nNext calibration due 01/04/2027": "asset_calibration",
+        "AUSTRALIA PASSPORT\nDate of expiry 03 FEB 2033": "id_passport",
+        "Subcontract Agreement between Future Engineering & Communication and CME": "biz_contract",
+        "Pre-employment medical assessment\nFit for work\nAudiometric testing": "med_fitness",
+    }
+    for text, cat in cases.items():
+        assert rule_extract(text, TODAY)["category"] == cat, (text[:30], rule_extract(text, TODAY)["category"])

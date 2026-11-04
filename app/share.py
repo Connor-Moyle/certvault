@@ -10,7 +10,7 @@ from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
 
 from . import config, db, export, scheduler
-from .categories import CATEGORY_BY_ID
+from .categories import CATEGORY_BY_ID, KINDS
 
 MAX_EMAIL_BYTES = 20 * 1024 * 1024  # Gmail/Outlook cap is ~25 MB after encoding
 
@@ -31,8 +31,10 @@ def safe(name: str) -> str:
 def doc_files(doc) -> list[tuple[str, "Path", str]]:
     """[(download name, path, mime)] for the main file + every extra side/page."""
     base = safe(doc["title"] or doc["original_name"] or "document")
-    out = [(f"{base}{' - front' if _page_count(doc['id']) else ''}.{doc['file_ext']}",
-            config.FILES_DIR / f"{doc['id']}.{doc['file_ext']}", doc["mime"])]
+    out = []
+    if doc["file_ext"]:
+        out.append((f"{base}{' - front' if _page_count(doc['id']) else ''}.{doc['file_ext']}",
+                    config.FILES_DIR / f"{doc['id']}.{doc['file_ext']}", doc["mime"]))
     for p in db.q("SELECT * FROM doc_pages WHERE doc_id=? ORDER BY sort, created_at", (doc["id"],)):
         label = safe(p["label"] or "page")
         out.append((f"{base} - {label.lower()}.{p['file_ext']}", config.FILES_DIR / f"{p['id']}.{p['file_ext']}", p["mime"]))
@@ -45,18 +47,19 @@ def _page_count(doc_id: str) -> int:
 
 def summary_lines(doc) -> list[str]:
     cat = CATEGORY_BY_ID.get(doc["category"] or "other", CATEGORY_BY_ID["other"])
-    reg = cat["kind"] == "register"
+    K = KINDS[cat["kind"]]
     rows = [
         ("Type", cat["name"]),
-        ("Issued by", doc["issuer"]),
+        (K["issuer"], doc["issuer"]),
         ("Holder", doc["holder_name"]),
-        ("Number", doc["licence_number"]),
+        (K["number"], doc["licence_number"]),
         ("Classes / endorsements", doc["classes"]),
-        ("Last inspected" if reg else "Completed / issued", _fmt(doc["completion_date"]) if doc["completion_date"] else None),
-        ("Next inspection due" if reg else "Expires",
+        (K["done"], _fmt(doc["completion_date"]) if doc["completion_date"] else None),
+        (K["exp"],
          "Does not expire" if doc["no_expiry"] else (_fmt(doc["expiry_date"]) + (" (estimated)" if doc["expiry_estimated"] else "")) if doc["expiry_date"] else None),
         ("Location", doc["location"]),
         ("RTO", doc["rto_code"]),
+        (K["cost"], doc["cost"]),
         ("Notes", doc["notes"]),
     ]
     return [f"{doc['title'] or 'Untitled'}"] + [f"  {k}: {v}" for k, v in rows if v]
@@ -168,8 +171,8 @@ def ics(docs, user_days: str) -> str:
         if not d["expiry_date"]:
             continue
         exp = date.fromisoformat(d["expiry_date"])
-        reg = CATEGORY_BY_ID.get(d["category"] or "other", CATEGORY_BY_ID["other"])["kind"] == "register"
-        title = f"{d['title']} — {'inspection due' if reg else 'expires'}"
+        K = KINDS[CATEGORY_BY_ID.get(d["category"] or "other", CATEGORY_BY_ID["other"])["kind"]]
+        title = f"{d['title']} — {K['exp'].lower()}"
         lines += ["BEGIN:VEVENT", f"UID:{d['id']}-{d['expiry_date']}@certvault", f"DTSTAMP:{now}",
                   f"DTSTART;VALUE=DATE:{exp:%Y%m%d}", f"DTEND;VALUE=DATE:{exp + timedelta(days=1):%Y%m%d}",
                   f"SUMMARY:{_ics_escape(title)}", f"DESCRIPTION:{_ics_escape(chr(10).join(summary_lines(d)))}",

@@ -49,6 +49,7 @@ function stateLabel(d) {
     default: return ["unknown", "No date", "event_busy"];
   }
 }
+const K = (kind) => (S.kinds && S.kinds[kind]) || { name: "Other", icon: "description", issuer: "Issued by", number: "Number", done: "Completed / issued", exp: "Expires", cost: "Cost" };
 const chip = (d) => { const [c, l, i] = stateLabel(d); return `<span class="chip ${c}">${icon(i)}${esc(l)}</span>`; };
 
 function lead(d) {
@@ -57,7 +58,7 @@ function lead(d) {
 }
 
 function docItem(d) {
-  const sub = [d.issuer, d.expiry_date ? `${d.kind === "register" ? "Due" : "Exp"} ${fmtDate(d.expiry_date)}${d.expiry_estimated ? " (est.)" : ""}` : null,
+  const sub = [d.issuer, d.expiry_date ? `${d.kind === "ticket" || d.kind === "personal" ? "Exp" : "Due"} ${fmtDate(d.expiry_date)}${d.expiry_estimated ? " (est.)" : ""}` : null,
     d.superseded ? "Previous version" : d.versions > 1 ? `${d.versions} versions` : null].filter(Boolean).join(" · ") || d.category_name;
   const review = d.status === "review" ? `<span class="chip review">${icon("edit")}Check</span>` : "";
   return `<a class="item" href="#/doc/${d.id}">${lead(d)}
@@ -189,7 +190,7 @@ function viewHome() {
   const need = expired.length + soon.length;
   let html = topbar("CertVault", { actions: `<a class="icon-btn" href="#/all" aria-label="Search">${icon("search")}</a>` });
   html += `<div class="large-title">${greet}, ${esc(S.me.username.charAt(0).toUpperCase() + S.me.username.slice(1))}</div>
-    <div class="subtitle">${docs.length ? (need ? `${need} item${need > 1 ? "s" : ""} need${need > 1 ? "" : "s"} attention` : "Everything is up to date") : "Let's add your first ticket"}</div>`;
+    <div class="subtitle">${docs.length ? (need ? `${need} item${need > 1 ? "s" : ""} need${need > 1 ? "" : "s"} attention` : "Everything is up to date") : "Tickets, insurance, rego, warranties — anything that expires"}</div>`;
   if (!docs.length) {
     html += `<div class="empty">${icon("folder_open")}<p>No documents yet.<br>Snap a photo of a licence or upload a PDF certificate —<br>${S.me.ai_enabled ? "AI" : "OCR"} will fill in the details.</p>
       <a class="btn filled" href="#/add">${icon("add_a_photo")}Add your first</a></div>`;
@@ -206,6 +207,9 @@ function viewHome() {
     <div class="body"><h3>${pct === 100 ? "Fully compliant" : `${tracked.length - Math.round(pct * tracked.length / 100)} expired`}</h3>
     <p>${tracked.length} tracked · ${docs.filter((d) => d.kind === "register").length} registers${next ? `<br>Next: <b>${esc(next.title)}</b> in ${next.days_left} day${next.days_left === 1 ? "" : "s"}` : ""}</p></div>
     <button class="icon-btn" id="sharepack" aria-label="Share all current tickets">${icon("share")}</button></div>`;
+  const kinds = [...new Set(docs.map((d) => d.kind))];
+  if (kinds.length > 1) html += `<div class="chips kinds">${kinds.map((k) => { const n = docs.filter((d) => d.kind === k); const bad = n.filter((d) => d.state === "expired" || d.state === "soon").length;
+    return `<a class="fchip" href="#/all?f=kind:${k}">${icon(K(k).icon)}${esc(K(k).name)} <b>${n.length}</b>${bad ? `<span class="mini-badge">${bad}</span>` : ""}</a>`; }).join("")}</div>`;
   if (review.length) html += `<div class="section-title">Check these details</div><div class="list gap">${review.map(docItem).join("")}</div>`;
   if (upcoming.length) html += `<div class="section-title">Coming up</div><div class="list gap">${upcoming.map(docItem).join("")}</div>`;
   render(html);
@@ -222,7 +226,7 @@ function viewAll(params) {
   const present = [...new Set(S.docs.map((d) => d.category || "other"))];
   const filters = [["all", "All", "category"], ["expired", "Expired", "error"], ["soon", "Due soon", "warning"], ["valid", "Current", "check"],
     ...(S.docs.some((d) => d.superseded) ? [["old", "Previous versions", "history_edu"]] : []),
-    ...(S.docs.some((d) => d.kind === "register") ? [["kind:ticket", "Tickets & licences", "badge"], ["kind:register", "Registers", "fact_check"]] : []),
+    ...(new Set(S.docs.map((d) => d.kind)).size > 1 ? [...new Set(S.docs.map((d) => d.kind))].map((k) => [`kind:${k}`, K(k).name, K(k).icon]) : []),
     ...present.map((id) => [`cat:${id}`, (S.catById[id] || {}).name || id, (S.catById[id] || {}).icon || "description"])];
   const selecting = !!S.selecting;
   render(topbar(selecting ? `${S.sel.size} selected` : "Documents", { actions: selecting
@@ -267,13 +271,14 @@ function viewAdd() {
   chrome(true, false);
   render(topbar("Add documents", { back: true }) + `
     <div class="drop" id="drop"><div class="big-icon">${icon("upload_file", "xl")}</div>
-      <h3>Add a licence or ticket</h3>
-      <div>Photos, PDFs or register spreadsheets (Excel/CSV) — or drop a whole folder here.<br>${S.me.ai_enabled ? `${icon("star_shine", "sm")} AI reads every file and fills in the details.` : "Details are read automatically with OCR."}</div></div>
+      <h3>Add a document</h3>
+      <div>Tickets, licences, insurance, rego, warranties, registers… Photos, PDFs or Excel/CSV — or drop a whole folder here.<br>${S.me.ai_enabled ? `${icon("star_shine", "sm")} AI reads every file and fills in the details.` : "Details are read automatically with OCR."}</div></div>
     <div class="upload-actions three">
       <label class="btn tonal">${icon("photo_camera")}Take photo<input type="file" accept="image/*" capture="environment" class="hidden" id="cam"></label>
       <label class="btn tonal">${icon("upload_file")}Choose files<input type="file" accept="application/pdf,image/*,.heic,.heif,.xlsx,.xlsm,.csv" multiple class="hidden" id="pick"></label>
       <label class="btn tonal">${icon("folder_open")}Import folder<input type="file" webkitdirectory directory multiple class="hidden" id="folder"></label>
     </div>
+    <button class="btn outlined manual-btn" id="manual">${icon("note_add")}Add something without a file<span>service due, subscription, BAS, anything with a date</span></button>
     <div class="card"><div class="switch-row"><div class="body"><b>Front &amp; back of one card</b><div class="s">Photos you take or pick become the sides/pages of ONE document</div></div><input type="checkbox" class="switch" id="group" ${S.groupMode ? "checked" : ""}></div>
       <div id="pending" class="hidden"><div class="sides small" id="pendsides"></div>
         <div class="btn-row end"><button class="btn text" id="pclear">Clear</button><label class="btn tonal">${icon("add_a_photo")}<span id="pnext">Take back</span><input type="file" accept="image/*" capture="environment" class="hidden" id="cam2"></label><button class="btn filled" id="pdone">${icon("check")}Save card</button></div></div></div>
@@ -295,12 +300,34 @@ function viewAdd() {
   $("#pclear").addEventListener("click", () => { S.pending = []; drawPending(); });
   $("#pdone").addEventListener("click", () => { const f = S.pending; S.pending = []; drawPending(); upload(f, false, true); });
   drawPending();
+  $("#manual").addEventListener("click", manualDialog);
   ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
   ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
   drop.addEventListener("drop", async (e) => upload(await filesFromDrop(e.dataTransfer)));
   $("#cam").addEventListener("change", (e) => { camTaken([...e.target.files]); e.target.value = ""; });
   $("#pick").addEventListener("change", (e) => upload([...e.target.files], false, $("#group").checked && e.target.files.length > 1));
   $("#folder").addEventListener("change", (e) => upload([...e.target.files], true));
+}
+
+function manualDialog() {
+  const byKind = {};
+  S.cats.forEach((c) => (byKind[c.kind] = byKind[c.kind] || []).push(c));
+  const dl = dialog(`<h2>Add without a file</h2><form class="form flush" id="mf">
+    <div class="field"><label>What is it?</label><input name="title" required placeholder="e.g. Ute service, BizCover renewal, Quarterly BAS"></div>
+    <div class="field"><label>Type</label><select name="category">${Object.entries(byKind).map(([k, cs]) => `<optgroup label="${esc(K(k).name)}">${cs.map((c) => `<option value="${c.id}" ${c.id === "other" ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</optgroup>`).join("")}</select></div>
+    <div class="row2"><div class="field"><label>Last done</label><input type="date" name="completion_date"></div>
+      <div class="field"><label>Next due</label><input type="date" name="expiry_date" required></div></div>
+    <div class="row2"><div class="field"><label>Repeats every (months)</label><input type="number" name="renew_months" min="1" max="240" placeholder="e.g. 12"></div>
+      <div class="field"><label>Reference (optional)</label><input name="licence_number" placeholder="Plate, policy no…"></div></div>
+    <div class="field"><label>Notes</label><textarea name="notes"></textarea></div>
+    <div class="btn-row"><button type="button" class="btn text" data-close>Cancel</button><button class="btn filled">${icon("check")}Save</button></div></form>`);
+  $("#mf", dl).addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    f.renew_months = f.renew_months ? +f.renew_months : null;
+    Object.keys(f).forEach((k) => f[k] === "" && (f[k] = null));
+    try { const r = await api("/api/documents/manual", { method: "POST", body: f }); dl.close(); await loadDocs(); snack("Added"); location.hash = `#/doc/${r.id}`; } catch (er) { snack(er.message); }
+  });
 }
 
 // Walk dropped folders (and sub-folders) to collect every file
@@ -378,10 +405,12 @@ async function viewDoc(id) {
   const [cls, , ic] = stateLabel(d);
   const big = d.status === "processing" ? "…" : d.days_left == null ? "" : Math.abs(d.days_left);
   const reg = d.kind === "register";
-  const L = reg ? { done: "Last inspected", exp: "Next inspection due" } : { done: "Completed / issued", exp: "Expires" };
+  const L = K(d.kind);
   const cdText = d.status === "processing" ? "Reading your document…"
     : reg && d.state === "expired" ? `days overdue — inspection was due ${fmtDate(d.expiry_date)}`
     : reg && d.days_left != null ? (d.days_left === 0 ? "Inspection due today!" : `days until next inspection · ${fmtDate(d.expiry_date)}`)
+    : d.kind !== "ticket" && d.state === "expired" ? `days overdue — was due ${fmtDate(d.expiry_date)}`
+    : d.kind !== "ticket" && d.days_left != null ? (d.days_left === 0 ? "Due today!" : `days until ${L.exp.toLowerCase()} · ${fmtDate(d.expiry_date)}`)
     : d.state === "expired" ? `days since it expired on ${fmtDate(d.expiry_date)}`
     : d.state === "none" ? "This one doesn't expire"
     : d.days_left == null ? "No expiry date found — add one so you get reminders"
@@ -393,7 +422,7 @@ async function viewDoc(id) {
   const isSheet = ["xlsx", "csv"].includes(d.file_ext);
   const classes = (d.classes || "").split(/;\s*/).filter(Boolean);
   const tags = (d.tags || "").split(/,\s*/).filter(Boolean);
-  const sides = [{ id: "main", label: d.pages && d.pages.length ? "Front" : "Document", thumb: d.has_thumb ? `/api/documents/${d.id}/thumb` : null, file: `/api/documents/${d.id}/file`, ext: d.file_ext },
+  const sides = [...(d.has_file ? [{ id: "main", label: d.pages && d.pages.length ? "Front" : "Document", thumb: d.has_thumb ? `/api/documents/${d.id}/thumb` : null, file: `/api/documents/${d.id}/file`, ext: d.file_ext }] : []),
     ...(d.pages || []).map((p) => ({ id: p.id, label: p.label, thumb: p.has_thumb ? `/api/documents/${d.id}/pages/${p.id}/thumb` : null, file: `/api/documents/${d.id}/pages/${p.id}/file`, ext: p.file_ext }))];
 
   let html = topbar(d.category_name, { back: true, actions: `
@@ -422,17 +451,19 @@ async function viewDoc(id) {
   if (d.extract_error) html += `<div class="card warn"><div class="head">${icon("warning")}<p>${esc(d.extract_error)}</p></div></div>`;
   html += `<div class="countdown ${cls}">${big !== "" ? `<div class="big">${big}</div>` : icon(ic, "xl")}<div class="s">${esc(cdText)}${d.expiry_estimated ? "<br><b>Estimated</b> from typical validity — check your card" : ""}</div></div>`;
   // sides gallery
-  html += `<div class="section-title">${sides.length > 1 ? `${sides.length} sides / pages` : "File"}</div><div class="sides">
+  const canRenew = d.kind !== "ticket" || d.renew_months;
+  if (canRenew && d.expiry_date && d.status !== "processing") html += `<div class="btn-row renew-row"><button class="btn tonal" id="renew">${icon("event_repeat")}Mark renewed / done${d.renew_months ? ` <small>(+${d.renew_months} mo)</small>` : ""}</button></div>`;
+  html += `<div class="section-title">${sides.length > 1 ? `${sides.length} sides / pages` : sides.length ? "File" : "No file yet"}</div><div class="sides">
     ${sides.map((sd) => `<div class="side"><a href="${sd.file}" target="_blank" rel="noopener" class="side-img">${sd.thumb ? `<img src="${sd.thumb}" alt="${esc(sd.label)}" loading="lazy">` : `<div class="side-ph">${icon(isSheet && sd.id === "main" ? "table_view" : "description", "xl")}<span>${esc((sd.ext || "").toUpperCase())}</span></div>`}</a>
       <div class="side-cap"><span>${esc(sd.label)}</span>${sd.id !== "main" ? `<button class="icon-btn sm" data-delpage="${sd.id}" aria-label="Remove ${esc(sd.label)}">${icon("close", "sm")}</button>` : ""}</div></div>`).join("")}
-    <label class="side add"><div class="side-img"><div class="side-ph">${icon("add_a_photo", "xl")}<span>${sides.length > 1 ? "Add page" : "Add back"}</span></div></div>
+    <label class="side add"><div class="side-img"><div class="side-ph">${icon("add_a_photo", "xl")}<span>${!sides.length ? "Add file" : sides.length > 1 || !["ticket", "personal"].includes(d.kind) ? "Add page" : "Add back"}</span></div></div>
       <input type="file" accept="image/*,application/pdf,.heic,.heif" capture="environment" class="hidden" id="addside"></label>
   </div>`;
   html += `<div class="list gap kv">
     ${kv("category", "Type", d.category_name)}
-    ${kv("apartment", "Issued by", d.issuer ? d.issuer + (d.issuer_type ? ` · ${issuerTypes[d.issuer_type] || d.issuer_type}` : "") : null)}
+    ${kv("apartment", L.issuer, d.issuer ? d.issuer + (d.issuer_type ? ` · ${issuerTypes[d.issuer_type] || d.issuer_type}` : "") : null)}
     ${kv("person", "Holder", d.holder_name)}
-    ${kv("tag", "Number", d.licence_number)}
+    ${kv("tag", L.number, d.licence_number)}
     ${kv("license", reg ? "Covers" : "Classes / endorsements", classes.length ? `<div class="class-list">${classes.map((c) => { const [code, ...rest] = c.split(" – "); return `<div class="class-row"><span class="code">${esc(code)}</span><span>${esc(rest.join(" – ") || "")}</span></div>`; }).join("")}</div>` : null, true)}
     ${kv("event_available", L.done, d.completion_date ? fmtDate(d.completion_date) : null)}
     ${kv("event", L.exp, d.expiry_date ? fmtDate(d.expiry_date) + (d.expiry_estimated ? " (estimated)" : "") : d.no_expiry ? "Doesn't expire" : "Not set")}
@@ -440,19 +471,20 @@ async function viewDoc(id) {
     ${kv("school", "RTO / provider code", d.rto_code)}
     ${kv("work", "Required for", d.required_for)}
     ${kv("autorenew", "How to renew", d.renewal_info)}
-    ${kv("payments", "Cost", d.cost)}
+    ${kv("payments", L.cost, d.cost)}
+    ${kv("event_repeat", "Renews every", d.renew_months ? `${d.renew_months} month${d.renew_months > 1 ? "s" : ""}` : null)}
     ${kv("sell", "Tags", tags.length ? `<div class="tag-row">${tags.map((t) => `<a class="chip none" href="#/all?q=${encodeURIComponent(t)}">${esc(t)}</a>`).join("")}</div>` : null, true)}
     ${kv("description", "Notes", d.notes)}
     ${kv("notifications", "Reminders", rem === "default" ? "Default schedule" : rem.split(",").map((x) => x === "0" ? "on the day" : `${x}d`).join(", ") + " before")}
   </div>
   <div class="btn-row">
     <button class="btn filled" id="share2">${icon("share")}Share</button>
-    <a class="btn outlined" href="/api/documents/${d.id}/file?download=1">${icon("download")}Download</a>
+    ${d.has_file ? `<a class="btn outlined" href="/api/documents/${d.id}/file?download=1">${icon("download")}Download</a>` : ""}
     ${d.expiry_date ? `<a class="btn outlined" href="/api/calendar.ics?ids=${d.id}">${icon("calendar_add_on")}Calendar</a>` : ""}
   </div>`;
   if (d.shares && d.shares.length) html += `<div class="section-title">Shared</div><div class="list gap kv">${d.shares.map((s) => `<div class="item"><div class="lead">${icon(s.method === "email" ? "mail" : s.method === "zip" ? "folder_zip" : "share")}</div>
     <div class="body"><div class="h">${esc(s.recipient || { phone: "Sent from phone", zip: "Downloaded ticket pack", copy: "Copied details" }[s.method] || s.method)}</div><div class="s">${esc(fmtDateTime(s.created_at))}</div></div></div>`).join("")}</div>`;
-  html += `<div class="meta">${esc(d.original_name || "")} · ${(d.size / 1048576).toFixed(2)} MB · uploaded ${fmtDate((d.created_at || "").slice(0, 10))}${d.extract_source ? ` · read by ${esc(d.extract_source.replace("ai:", "AI "))}` : ""}</div>`;
+  html += `<div class="meta">${d.has_file ? `${esc(d.original_name || "")} · ${((d.size || 0) / 1048576).toFixed(2)} MB · ` : "Tracked without a file · "}added ${fmtDate((d.created_at || "").slice(0, 10))}${d.extract_source ? ` · read by ${esc(d.extract_source.replace("ai:", "AI "))}` : ""}</div>`;
   if (d.ai_text || d.ocr_text) {
     html += `<details id="txt"><summary>${icon("description", "sm")} Show document text</summary>
       ${d.ai_text ? `<div class="seg small" id="txtseg"><button type="button" class="on" data-t="ai">${icon("star_shine", "sm")}AI transcript</button><button type="button" data-t="ocr">Raw scan</button></div>` : `<p class="hint-p">Raw OCR scan${S.me.ai_enabled ? "" : " — turn on AI in Settings for a clean transcript"}.</p>`}
@@ -482,10 +514,24 @@ async function viewDoc(id) {
     }
   }));
   $("#share").addEventListener("click", () => shareSheet([d]));
+  $("#renew") && $("#renew").addEventListener("click", async () => {
+    const guess = d.renew_months || { insurance: 12, vehicle: 12, business: 12, asset: 12, medical: 24, register: 3, personal: 120 }[d.kind] || 12;
+    const dl = dialog(`<h2>Mark renewed</h2><p>Sets today as done and moves the due date forward. Upload the new certificate/policy too if you have one.</p>
+      <form class="form flush" id="rf"><div class="row2"><div class="field"><label>Renews every (months)</label><input type="number" name="months" min="1" max="240" value="${guess}" required></div>
+      <div class="field"><label>…or exact new due date</label><input type="date" name="new_expiry"></div></div>
+      <div class="btn-row"><button type="button" class="btn text" data-close>Cancel</button><button class="btn filled">${icon("event_repeat")}Renew</button></div></form>`);
+    $("#rf", dl).addEventListener("submit", async (e) => {
+      e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
+      try {
+        const r = await api(`/api/documents/${d.id}/renew`, { method: "POST", body: f.new_expiry ? { new_expiry: f.new_expiry } : { months: +f.months } });
+        dl.close(); await loadDocs(); snack(`Renewed — next due ${fmtDate(r.expiry_date)}`); viewDoc(id);
+      } catch (er) { snack(er.message); }
+    });
+  });
   $("#share2").addEventListener("click", () => shareSheet([d]));
   $("#addside").addEventListener("change", async (e) => {
     const f = e.target.files[0]; if (!f) return;
-    const fd = new FormData(); fd.append("file", f, f.name); fd.append("label", sides.length === 1 ? "Back" : `Page ${sides.length + 1}`);
+    const fd = new FormData(); fd.append("file", f, f.name); fd.append("label", sides.length <= 1 ? "Back" : `Page ${sides.length + 1}`);
     snack(`Uploading ${sides.length === 1 ? "back" : "page"}…`);
     try { await api(`/api/documents/${d.id}/pages`, { method: "POST", body: fd }); await loadDocs(); snack("Added — re-reading every side"); viewDoc(id); } catch (err) { snack(err.message, 5000); }
   });
@@ -623,18 +669,18 @@ async function viewEdit(id) {
   render(topbar("Edit details", { back: true }) + `
     <form class="form" id="f">
       <div class="field"><label>Title</label><input name="title" value="${esc(d.title)}" maxlength="300"></div>
-      <div class="field"><label>Type</label><select name="category">${S.cats.map((c) => opt(c.id, c.name, d.category || "other")).join("")}</select></div>
+      <div class="field"><label>Type</label><select name="category">${Object.entries(S.cats.reduce((a, c) => ((a[c.kind] = a[c.kind] || []).push(c), a), {})).map(([k, cs]) => `<optgroup label="${esc(K(k).name)}">${cs.map((c) => opt(c.id, c.name, d.category || "other")).join("")}</optgroup>`).join("")}</select></div>
       <div class="row2">
-        <div class="field"><label>Issued by</label><input name="issuer" value="${esc(d.issuer)}" placeholder="e.g. WA Department of Transport"></div>
+        <div class="field"><label id="l-iss">${esc(K((S.catById[d.category] || {}).kind).issuer)}</label><input name="issuer" value="${esc(d.issuer)}" placeholder="e.g. WA Department of Transport"></div>
         <div class="field"><label>Issuer type</label><select name="issuer_type">${opt("", "—", d.issuer_type)}${opt("government", "Government", d.issuer_type)}${opt("training", "Training provider", d.issuer_type)}${opt("company", "Company / site", d.issuer_type)}${opt("other", "Other", d.issuer_type)}</select></div>
       </div>
       <div class="row2">
         <div class="field"><label>Holder name</label><input name="holder_name" value="${esc(d.holder_name)}" autocomplete="off"></div>
-        <div class="field"><label>Licence / cert number</label><input name="licence_number" value="${esc(d.licence_number)}" autocomplete="off"></div>
+        <div class="field"><label id="l-num">${esc(K((S.catById[d.category] || {}).kind).number)}</label><input name="licence_number" value="${esc(d.licence_number)}" autocomplete="off"></div>
       </div>
       <div class="row2">
-        <div class="field"><label id="l-done">${(S.catById[d.category] || {}).kind === "register" ? "Last inspected" : "Completed / issued"}</label><input type="date" name="completion_date" value="${esc(d.completion_date)}"></div>
-        <div class="field ${d.expiry_estimated ? "warn" : ""}"><label id="l-exp">${(S.catById[d.category] || {}).kind === "register" ? "Next inspection due" : "Expiry date"}</label><input type="date" name="expiry_date" id="exp" value="${esc(d.expiry_date)}">${d.expiry_estimated ? '<div class="hint">Estimated — check your card</div>' : ""}</div>
+        <div class="field"><label id="l-done">${esc(K((S.catById[d.category] || {}).kind).done)}</label><input type="date" name="completion_date" value="${esc(d.completion_date)}"></div>
+        <div class="field ${d.expiry_estimated ? "warn" : ""}"><label id="l-exp">${esc(K((S.catById[d.category] || {}).kind).exp)}</label><input type="date" name="expiry_date" id="exp" value="${esc(d.expiry_date)}">${d.expiry_estimated ? '<div class="hint">Estimated — check your card</div>' : ""}</div>
       </div>
       <div class="switch-row"><div class="body">Doesn't expire<div class="s">No reminders for this one</div></div><input type="checkbox" class="switch" name="no_expiry" ${d.no_expiry ? "checked" : ""}></div>
       <div class="field"><label>Classes / endorsements / units</label><textarea name="classes" maxlength="1000" placeholder="e.g. CV – Vehicle loading crane; DG – Dogging; RB – Basic rigging">${esc((d.classes || "").split(/;\s*/).join("\n"))}</textarea><div class="hint">One per line. For a HRWL just type the codes (CV, DG, RB…) — they're spelled out for you.</div></div>
@@ -645,7 +691,10 @@ async function viewEdit(id) {
       <div class="field"><label>Required for (clients / sites)</label><input name="required_for" value="${esc(d.required_for)}" placeholder="e.g. Telstra sites, FEC, Roy Hill"></div>
       <div class="field"><label>How to renew</label><textarea name="renewal_info" maxlength="1000" placeholder="Provider, phone, website, course length, refresher only?">${esc(d.renewal_info)}</textarea></div>
       <div class="row2">
-        <div class="field"><label>Cost</label><input name="cost" value="${esc(d.cost)}" placeholder="$"></div>
+        <div class="field"><label>Cost / premium</label><input name="cost" value="${esc(d.cost)}" placeholder="$"></div>
+        <div class="field"><label>Renews every (months)</label><input type="number" name="renew_months" min="0" max="240" value="${esc(d.renew_months)}" placeholder="—"></div>
+      </div>
+      <div class="row2">
         <div class="field"><label>Tags</label><input name="tags" value="${esc(d.tags)}" placeholder="e.g. telco, heights, client-required"></div>
       </div>
       <div class="field"><label>Notes</label><textarea name="notes" maxlength="4000">${esc(d.notes)}</textarea></div>
@@ -653,15 +702,15 @@ async function viewEdit(id) {
       <div class="btn-row end"><button type="button" class="btn text" data-back>Cancel</button><button class="btn filled">${icon("check")}Save</button></div>
     </form>`);
   $("[name=category]").addEventListener("change", (e) => {
-    const r = (S.catById[e.target.value] || {}).kind === "register";
-    $("#l-done").textContent = r ? "Last inspected" : "Completed / issued";
-    $("#l-exp").textContent = r ? "Next inspection due" : "Expiry date";
+    const k = K((S.catById[e.target.value] || {}).kind);
+    $("#l-done").textContent = k.done; $("#l-exp").textContent = k.exp; $("#l-iss").textContent = k.issuer; $("#l-num").textContent = k.number;
   });
   $("#f").addEventListener("submit", async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
     const body = { ...f, no_expiry: !!f.no_expiry };
     body.classes = expandClasses(f.classes || "", f.category);
+    body.renew_months = f.renew_months ? +f.renew_months : null;
     if (body.expiry_date !== (d.expiry_date || "")) body.expiry_estimated = false;
     try { await api(`/api/documents/${id}`, { method: "PATCH", body }); await loadDocs(); snack("Saved"); history.back(); } catch (err) { snack(err.message); }
   });
@@ -902,7 +951,8 @@ async function boot() {
   if (st.data && st.data.setup_required) { S.me = null; location.hash = "#/setup"; return viewSetup(); }
   if (!st.data || !st.data.logged_in) { S.me = null; if (location.hash !== "#/login") location.hash = "#/login"; return viewLogin(); }
   S.me = await api("/api/me");
-  S.cats = await api("/api/categories");
+  const cr = await api("/api/categories");
+  S.cats = cr.categories; S.kinds = cr.kinds;
   S.catById = Object.fromEntries(S.cats.map((c) => [c.id, c]));
   await loadDocs();
   if (["#/login", "#/setup"].includes(location.hash)) location.hash = "#/";

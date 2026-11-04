@@ -496,3 +496,15 @@ details summary { display: flex; align-items: center; gap: 6px; }
 .ring.warn { --c: var(--warn); } .ring.bad { --c: var(--bad); }
 .ring span { width: 54px; height: 54px; border-radius: 50%; background: var(--sc-low); display: grid; place-items: center; font: 500 16px var(--font-display); }
 .list.act .item { min-height: 56px; cursor: default; }
+
+/* v1.4 */
+.manual-btn { display: flex; flex-direction: column; height: auto; padding: 14px 16px; margin: 0 16px 12px; width: calc(100% - 32px); border-radius: var(--r-lg); gap: 2px; }
+.manual-btn span { font-weight: 400; font-size: 12px; color: var(--on-surface-v); }
+.manual-btn .icon { margin-bottom: 2px; }
+.chips.kinds { padding-top: 0; }
+.chips.kinds .fchip { text-decoration: none; color: var(--on-surface); gap: 6px; }
+.chips.kinds .fchip .icon { width: 18px; height: 18px; color: var(--primary); }
+.mini-badge { min-width: 18px; height: 18px; border-radius: 9px; background: var(--warn-c); color: var(--on-warn-c); font-size: 11px; line-height: 18px; text-align: center; padding: 0 5px; }
+.renew-row { margin-top: -4px; }
+.renew-row small { font-weight: 400; opacity: .8; }
+optgroup { font-weight: 600; }

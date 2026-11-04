@@ -11,7 +11,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from . import config, db, notify
-from .categories import is_register
+from .categories import KINDS, is_register, kind_of
 from . import versions
 
 log = logging.getLogger("certvault.scheduler")
@@ -48,6 +48,16 @@ def message_for(doc, days_left: int, exp: date) -> tuple[str, str, bool]:
                     f"Next inspection for {name} is due {fmt(exp)}.", True)
         return (f"{name}: inspection OVERDUE", f"{name} inspection was due {fmt(exp)} ({-days_left} days ago). "
                 "Gear shouldn't be used until it's inspected.", True)
+    k = kind_of(doc["category"])
+    if k != "ticket":
+        verb = KINDS[k]["verb"]  # "needs renewing", "is due", "expires"
+        if days_left > 1:
+            return (f"{name} {verb} in {days_left} days", f"{name} {verb} on {fmt(exp)}.", days_left <= 7)
+        if days_left >= 0:
+            when = "TODAY" if days_left == 0 else "tomorrow"
+            return f"{name} {verb} {when}", f"{name} {verb} {when} ({fmt(exp)}).", True
+        return (f"{name} is OVERDUE", f"{name} was due {fmt(exp)} ({-days_left} days ago). "
+                "Tap to mark it renewed once it's sorted.", True)
     if days_left > 1:
         return (f"{name} expires in {days_left} days",
                 f"{name} expires on {fmt(exp)}. Time to book the renewal.", days_left <= 7)

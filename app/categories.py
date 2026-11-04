@@ -90,6 +90,74 @@ CATEGORIES = [
     {"id": "other_register", "name": "Other Register", "icon": "list_alt", "color": "grey", "kind": "register",
      "keywords": ["register", "inspection log", "inspection record"],
      "codes": [], "validity_years": None},
+    # ---- insurance ----
+    {"id": "ins_public_liability", "name": "Public Liability Insurance", "icon": "shield", "color": "blue", "kind": "insurance",
+     "keywords": ["public liability", "general liability", "broadform liability", "products liability", "certificate of currency"],
+     "codes": [], "validity_years": 1},
+    {"id": "ins_workers", "name": "Workers Comp / Personal Accident", "icon": "health_and_safety", "color": "blue", "kind": "insurance",
+     "keywords": ["workers compensation", "workers' compensation", "personal accident", "sickness and accident", "accident and illness"],
+     "codes": [], "validity_years": 1},
+    {"id": "ins_income", "name": "Income Protection", "icon": "umbrella", "color": "blue", "kind": "insurance",
+     "keywords": ["income protection", "salary continuance"], "codes": [], "validity_years": 1},
+    {"id": "ins_pi", "name": "Professional Indemnity", "icon": "shield", "color": "indigo", "kind": "insurance",
+     "keywords": ["professional indemnity"], "codes": [], "validity_years": 1},
+    {"id": "ins_vehicle", "name": "Vehicle Insurance", "icon": "car_crash", "color": "blue", "kind": "insurance",
+     "keywords": ["motor vehicle insurance", "car insurance", "comprehensive motor", "comprehensive car", "third party property",
+                  "vehicle insurance", "ute insurance"], "codes": [], "validity_years": 1},
+    {"id": "ins_tools", "name": "Tools / Equipment Insurance", "icon": "build_circle", "color": "blue", "kind": "insurance",
+     "keywords": ["tool insurance", "tools insurance", "portable equipment", "general property", "tradie insurance"],
+     "codes": [], "validity_years": 1},
+    {"id": "ins_home", "name": "Home & Contents Insurance", "icon": "home_work", "color": "blue", "kind": "insurance",
+     "keywords": ["home and contents", "home & contents", "contents insurance", "building insurance", "landlord insurance"],
+     "codes": [], "validity_years": 1},
+    {"id": "ins_other", "name": "Other Insurance", "icon": "shield", "color": "grey", "kind": "insurance",
+     "keywords": ["insurance policy", "policy schedule", "renewal notice", "policy number", "insurer"], "codes": [], "validity_years": 1},
+    # ---- vehicles ----
+    {"id": "veh_rego", "name": "Vehicle Registration", "icon": "directions_car", "color": "purple", "kind": "vehicle",
+     "keywords": ["vehicle licence", "motor vehicle licence", "vehicle registration", "registration certificate", "rego",
+                  "licence fee", "plate number", "registration expiry", "number plate"], "codes": [], "validity_years": 1},
+    {"id": "veh_service", "name": "Vehicle Service", "icon": "car_repair", "color": "purple", "kind": "vehicle",
+     "keywords": ["next service", "logbook service", "service invoice", "odometer", "oil and filter", "service due"],
+     "codes": [], "validity_years": 0.5},
+    {"id": "veh_inspection", "name": "Vehicle Inspection / Roadworthy", "icon": "minor_crash", "color": "purple", "kind": "vehicle",
+     "keywords": ["vehicle inspection", "roadworthy", "heavy vehicle inspection", "inspection report", "pink slip"],
+     "codes": [], "validity_years": 1},
+    # ---- business ----
+    {"id": "biz_abn", "name": "ABN / Business Registration", "icon": "business_center", "color": "teal", "kind": "business",
+     "keywords": ["australian business number", "abn registration", "australian business register", "abn lookup",
+                  "business name registration", "registered business name", "gst registration"], "codes": [], "validity_years": None},
+    {"id": "biz_contract", "name": "Contract / Agreement", "icon": "handshake", "color": "teal", "kind": "business",
+     "keywords": ["subcontract agreement", "subcontractor agreement", "contractor agreement", "master services agreement",
+                  "services agreement", "terms of engagement", "agreement between"], "codes": [], "validity_years": None},
+    {"id": "biz_onboarding", "name": "Client / Supplier Onboarding", "icon": "assignment_turned_in", "color": "teal", "kind": "business",
+     "keywords": ["supplier onboarding", "vendor registration", "eftsure", "supplier registration", "prequalification",
+                  "pre-qualification", "contractor portal", "rapid global", "cm3", "avetta", "ivolve"], "codes": [], "validity_years": 1},
+    {"id": "biz_swms", "name": "SWMS / JSA / Safety Doc", "icon": "contract", "color": "amber", "kind": "business",
+     "keywords": ["safe work method statement", "swms", "jsea", "job safety analysis", "job hazard analysis", "risk assessment"],
+     "codes": [], "validity_years": 1},
+    # ---- personal ID ----
+    {"id": "id_passport", "name": "Passport", "icon": "passport", "color": "indigo", "kind": "personal",
+     "keywords": ["passport"], "codes": [], "validity_years": 10},
+    {"id": "id_other", "name": "Proof of ID / Card", "icon": "id_card", "color": "indigo", "kind": "personal",
+     "keywords": ["medicare", "birth certificate", "proof of age", "photo card", "keypass", "citizenship certificate"],
+     "codes": [], "validity_years": None},
+    # ---- assets / warranties / servicing ----
+    {"id": "asset_warranty", "name": "Warranty", "icon": "verified", "color": "green", "kind": "asset",
+     "keywords": ["warranty", "manufacturer's guarantee", "extended warranty"], "codes": [], "validity_years": 1},
+    {"id": "asset_receipt", "name": "Receipt / Proof of Purchase", "icon": "receipt_long", "color": "green", "kind": "asset",
+     "keywords": ["tax invoice", "receipt", "proof of purchase", "invoice no", "amount paid"], "codes": [], "validity_years": None},
+    {"id": "asset_calibration", "name": "Calibration / Test Certificate", "icon": "speed", "color": "green", "kind": "asset",
+     "keywords": ["calibration certificate", "calibrated", "bump test", "gas detector", "certificate of calibration",
+                  "load test certificate", "proof load", "test certificate"], "codes": [], "validity_years": 0.5},
+    {"id": "asset_fire", "name": "Fire Extinguisher / Safety Equipment Service", "icon": "fire_extinguisher", "color": "red", "kind": "asset",
+     "keywords": ["fire extinguisher", "as 1851", "first aid kit", "eyewash"], "codes": [], "validity_years": 0.5},
+    {"id": "membership", "name": "Membership / Subscription", "icon": "card_membership", "color": "green", "kind": "asset",
+     "keywords": ["membership", "subscription", "member number", "annual fee", "union"], "codes": [], "validity_years": 1},
+    # ---- work medicals ----
+    {"id": "med_fitness", "name": "Work Medical / Fitness for Work", "icon": "medical_information", "color": "red", "kind": "medical",
+     "keywords": ["fitness for work", "pre-employment medical", "medical assessment", "fit for work", "functional capacity",
+                  "periodic medical", "spirometry", "audiometric", "hearing test", "drug and alcohol", "d&a test"],
+     "codes": [], "validity_years": 2},
     {"id": "other", "name": "Other", "icon": "description", "color": "grey",
      "keywords": [], "codes": [], "validity_years": None},
 ]
@@ -97,11 +165,35 @@ CATEGORIES = [
 for _c in CATEGORIES:
     _c.setdefault("kind", "ticket")
 
+# How each kind of document is described in the UI, exports, e-mails and reminders
+KINDS = {
+    "ticket":    {"name": "Tickets & licences", "icon": "badge", "issuer": "Issued by", "number": "Licence / cert number",
+                  "done": "Completed / issued", "exp": "Expires", "verb": "expires", "cost": "Cost"},
+    "register":  {"name": "Registers", "icon": "fact_check", "issuer": "Kept / inspected by", "number": "Register ref",
+                  "done": "Last inspected", "exp": "Next inspection due", "verb": "inspection is due", "cost": "Cost"},
+    "insurance": {"name": "Insurance", "icon": "shield", "issuer": "Insurer", "number": "Policy number",
+                  "done": "Policy start", "exp": "Renewal date", "verb": "needs renewing", "cost": "Premium"},
+    "vehicle":   {"name": "Vehicles", "icon": "directions_car", "issuer": "Issued by / workshop", "number": "Plate / VIN",
+                  "done": "Date done / paid", "exp": "Next due", "verb": "is due", "cost": "Cost"},
+    "business":  {"name": "Business", "icon": "business_center", "issuer": "Company / authority", "number": "Reference / ABN",
+                  "done": "Signed / issued", "exp": "Expires / review date", "verb": "expires", "cost": "Value"},
+    "personal":  {"name": "Personal ID", "icon": "id_card", "issuer": "Issued by", "number": "Document number",
+                  "done": "Issued", "exp": "Expires", "verb": "expires", "cost": "Cost"},
+    "asset":     {"name": "Warranties & equipment", "icon": "verified", "issuer": "Bought from / serviced by", "number": "Serial / receipt no.",
+                  "done": "Purchased / serviced", "exp": "Warranty ends / next due", "verb": "is due", "cost": "Price"},
+    "medical":   {"name": "Work medicals", "icon": "medical_information", "issuer": "Clinic / provider", "number": "Reference",
+                  "done": "Assessed", "exp": "Next due", "verb": "is due", "cost": "Cost"},
+}
+
+
+def kind_of(cat_id: str | None) -> str:
+    return CATEGORY_BY_ID.get(cat_id or "other", {"kind": "ticket"})["kind"]
+
 CATEGORY_BY_ID = {c["id"]: c for c in CATEGORIES}
 
 
 def is_register(cat_id: str | None) -> bool:
-    return CATEGORY_BY_ID.get(cat_id or "other", CATEGORY_BY_ID["other"])["kind"] == "register"
+    return kind_of(cat_id) == "register"
 
 # Well-known unit codes -> readable titles (used to build nice titles)
 UNIT_TITLES = {
@@ -169,6 +261,24 @@ ISSUERS = [
     ("indara", "Indara", "company"),
     ("amplitel", "Amplitel", "company"),
     ("future engineering", "Future Engineering & Communication", "company"),
+    ("australian business register", "Australian Business Register", "government"),
+    ("asic", "ASIC", "government"),
+    ("australian taxation office", "ATO", "government"),
+    ("passport office", "Australian Passport Office", "government"),
+    ("services australia", "Services Australia", "government"),
+    ("racwa", "RAC WA", "company"),
+    ("rac insurance", "RAC Insurance", "company"),
+    ("nrma", "NRMA", "company"),
+    ("allianz", "Allianz", "company"),
+    ("qbe", "QBE", "company"),
+    ("cgu", "CGU", "company"),
+    ("bizcover", "BizCover", "company"),
+    ("aami", "AAMI", "company"),
+    ("budget direct", "Budget Direct", "company"),
+    ("suncorp", "Suncorp", "company"),
+    ("youi", "Youi", "company"),
+    ("icare", "icare", "government"),
+    ("workcover wa", "WorkCover WA", "government"),
 ]
 
 # High Risk Work Licence classes (Safe Work Australia national classes)
