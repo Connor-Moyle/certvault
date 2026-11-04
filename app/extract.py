@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from .categories import CATEGORIES, CATEGORY_BY_ID, ISSUERS, UNIT_TITLES, is_register
+from .categories import CATEGORIES, CATEGORY_BY_ID, DL_CLASSES, HRWL_CLASSES, ISSUERS, UNIT_TITLES, is_register
 
 log = logging.getLogger("certvault.extract")
 
@@ -166,21 +166,139 @@ def page_images(path: Path, ext: str) -> list[Image.Image]:
     return [im.convert("RGB")]
 
 
+def _otsu(a) -> float:
+    import numpy as np
+    hist = np.bincount(a.ravel(), minlength=256).astype(float)
+    total = a.size
+    sum_all = np.dot(np.arange(256), hist)
+    w_b = sum_b = 0.0
+    best, thr = 0.0, 127
+    for t in range(256):
+        w_b += hist[t]
+        if w_b == 0 or w_b == total:
+            continue
+        sum_b += t * hist[t]
+        m_b, m_f = sum_b / w_b, (sum_all - sum_b) / (total - w_b)
+        between = w_b * (total - w_b) * (m_b - m_f) ** 2
+        if between > best:
+            best, thr = between, t
+    return thr
+
+
+def _deskew(g: Image.Image) -> Image.Image:
+    """Straighten a slightly tilted photo (±15°) using the row-projection method."""
+    import numpy as np
+    small = g.copy()
+    small.thumbnail((900, 900))
+    # use local-threshold "ink" (text strokes) so dark backgrounds / tables / shadows don't dominate
+    ink = 255 - np.asarray(_adaptive(small), dtype=np.uint8)
+    ink_img = Image.fromarray(ink)
+
+    def score(angle):
+        r = np.asarray(ink_img.rotate(angle, resample=Image.BILINEAR, fillcolor=0), dtype=np.float32)
+        return float(np.var(r.sum(axis=1)))
+
+    best = max(range(-15, 16, 1), key=score)
+    fine = max([best + d / 4 for d in range(-4, 5)], key=score)
+    if abs(fine) < 0.3:
+        return g
+    return g.rotate(fine, resample=Image.BICUBIC, expand=True, fillcolor=255)
+
+
+def _adaptive(g: Image.Image) -> Image.Image:
+    """Local threshold — removes shadows / uneven lighting and coloured card backgrounds."""
+    import numpy as np
+    from PIL import ImageFilter
+    a = np.asarray(g, dtype=np.int16)
+    bg = np.asarray(g.filter(ImageFilter.BoxBlur(max(15, g.width // 60))), dtype=np.int16)
+    out = np.where(a < bg - 12, 0, 255).astype(np.uint8)
+    return Image.fromarray(out).filter(ImageFilter.MedianFilter(3))
+
+
+def _ocr_best(variants) -> tuple[str, float, float]:
+    """Run Tesseract over several preprocessed images / layouts and keep the most confident result,
+    dropping low-confidence junk words and garbage lines."""
+    import pytesseract
+    best_text, best_score, best_mean = "", -1.0, 0.0
+    for img in variants:
+        for psm in (3, 6, 4):
+            try:
+                data = pytesseract.image_to_data(img, lang="eng", config=f"--psm {psm} --oem 1",
+                                                 output_type=pytesseract.Output.DICT)
+            except Exception:
+                continue
+            lines: dict = {}
+            good = []
+            total = sum(1 for w in data["text"] if w.strip())
+            for i, word in enumerate(data["text"]):
+                word = word.strip()
+                try:
+                    conf = float(data["conf"][i])
+                except (TypeError, ValueError):
+                    conf = -1
+                if not word or conf < 0:
+                    continue
+                if conf >= 50 or (conf >= 30 and re.fullmatch(r"[\d/.\-:]{4,}", word)):
+                    key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+                    lines.setdefault(key, []).append(word)
+                    good.append(conf)
+            if not good:
+                continue
+            ratio = len(good) / max(total, 1)
+            score = sum(good) * ratio * ratio  # confident AND mostly-readable beats lots of junk
+            if score > best_score:
+                out = []
+                for key in sorted(lines):
+                    ln = " ".join(lines[key])
+                    alnum = sum(ch.isalnum() for ch in ln)
+                    if len(ln) >= 2 and alnum / max(len(ln), 1) >= 0.55:
+                        out.append(ln)
+                best_text, best_score, best_mean = "\n".join(out), score, ratio
+    return best_text, best_score, best_mean
+
+
 def ocr_image(img: Image.Image) -> str:
     import pytesseract
     g = ImageOps.grayscale(img)
-    if max(g.size) < 1800:  # upscale small phone crops for better OCR
-        s = 1800 / max(g.size)
+    # tesseract likes ~30px text; most phone photos of cards need upscaling
+    target = 2400
+    if max(g.size) < target:
+        s = target / max(g.size)
         g = g.resize((int(g.width * s), int(g.height * s)), Image.LANCZOS)
-    g = ImageOps.autocontrast(g)
+    elif max(g.size) > 3600:
+        g.thumbnail((3600, 3600), Image.LANCZOS)
+    candidates = [g]
     try:
         osd = pytesseract.image_to_osd(g, output_type=pytesseract.Output.DICT)
         rot = int(osd.get("rotate", 0))
-        if rot:
-            g = g.rotate(-rot, expand=True)
+        if rot:  # OSD is unreliable on sparse cards — try both and let the confidence score decide
+            candidates.append(g.rotate(-rot, expand=True))
     except Exception:
         pass
-    return pytesseract.image_to_string(g, lang="eng", config="--psm 3")
+    def prep(cands):
+        out = []
+        for c in cands:
+            try:
+                c = _deskew(c)
+            except Exception as e:
+                log.info("deskew skipped: %s", e)
+            c = ImageOps.autocontrast(c, cutoff=1)
+            out.append(c)
+            try:
+                out.append(_adaptive(c))
+            except Exception as e:
+                log.info("adaptive threshold skipped: %s", e)
+        return out
+
+    text, score, mean = _ocr_best(prep(candidates))
+    if mean < 0.75 or len(text) < 15:  # poor read (lots of unreadable words): maybe upside down / sideways
+        for angle in (180, 90, 270):
+            t2, s2, m2 = _ocr_best(prep([g.rotate(angle, expand=True)]))
+            if s2 > score * 1.3:
+                text, score, mean = t2, s2, m2
+                if m2 >= 0.8:
+                    break
+    return text
 
 
 def get_text(path: Path, ext: str) -> str:
@@ -472,9 +590,39 @@ def detect_title(text: str, cat_id: str) -> str:
     m = re.search(r"\b([A-Z]{3,6}[A-Z0-9]{2,4}\d{3}[A-Z]?)\b", upper)  # generic unit code
     if is_register(cat_id):
         return CATEGORY_BY_ID[cat_id]["name"]
-    if m and cat_id not in ("drivers_licence", "police_check", "wwc", "security_id"):
+    if m and cat_id not in ("drivers_licence", "police_check", "wwc", "security_id", "hrwl"):
         return f"{CATEGORY_BY_ID[cat_id]['name']} ({m.group(1)})"
     return CATEGORY_BY_ID[cat_id]["name"]
+
+
+def detect_classes(text: str, cat_id: str) -> str | None:
+    """Licence classes spelled out, e.g. 'CV – Vehicle loading crane; DG – Dogging'."""
+    upper = text.upper()
+    found = []
+    if cat_id == "hrwl":
+        lines = upper.splitlines()
+        cand = []
+        for i, ln in enumerate(lines):
+            if "CLASS" in ln:  # "Classes: CV DG RB" and the line(s) right after
+                cand.append(re.split(r"CLASS(?:ES)?\b", ln, maxsplit=1)[-1])
+                cand += lines[i + 1:i + 3]
+        if not cand:  # fall back to lines that are mostly class codes
+            for ln in lines:
+                toks = re.findall(r"[A-Z0-9]+", ln)
+                hits = [t for t in toks if t in HRWL_CLASSES]
+                if len(hits) >= 1 and len(hits) >= 0.6 * len(toks):
+                    cand.append(ln)
+        for tok in re.findall(r"(?<![A-Z0-9])([A-Z][A-Z0-9])(?![A-Z0-9])", " ".join(cand)):
+            if tok in HRWL_CLASSES:
+                code = "C0" if tok == "CO" else tok
+                found.append(f"{code} – {HRWL_CLASSES[code]}")
+    elif cat_id == "drivers_licence":
+        m = re.search(r"\bCLASS(?:ES)?\s*[:\-]?\s*([A-Z0-9 ,/\-]{1,30})", upper)
+        if m:
+            for tok in re.split(r"[ ,/]+", m.group(1).strip()):
+                if tok in DL_CLASSES:
+                    found.append(f"{tok} – {DL_CLASSES[tok]}")
+    return "; ".join(dict.fromkeys(found)) or None
 
 
 def rule_extract(text: str, today: date | None = None) -> dict:
@@ -499,7 +647,7 @@ def rule_extract(text: str, today: date | None = None) -> dict:
         expiry = add_years(dates["completion_date"], validity)
         estimated = True
     rto = detect_rto(text)
-    notes = f"RTO {rto}" if rto else None
+    notes = None
     return {
         "title": detect_title(text, cat),
         "category": cat,
@@ -512,4 +660,6 @@ def rule_extract(text: str, today: date | None = None) -> dict:
         "expiry_estimated": estimated,
         "location": detect_location(text),
         "notes": notes,
+        "classes": detect_classes(text, cat),
+        "rto_code": rto,
     }

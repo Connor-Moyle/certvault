@@ -410,7 +410,7 @@ code { font-family: ui-monospace, monospace; font-size: 12px; background: var(--
 .table-wrap { margin: 0 16px; overflow-x: auto; border-radius: var(--r-lg); border: 1px solid var(--outline-v); -webkit-overflow-scrolling: touch; }
 table.master { border-collapse: collapse; font-size: 13px; min-width: 100%; }
 table.master th, table.master td { padding: 10px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--outline-v); white-space: nowrap; }
-table.master td:nth-child(16) { white-space: normal; min-width: 260px; }
+table.master td:nth-child(16), table.master td:nth-child(21), table.master td:nth-child(24) { white-space: normal; min-width: 260px; }
 table.master th { background: var(--sc-high); color: var(--on-surface-v); font-weight: 500; position: sticky; top: 0; z-index: 1; }
 table.master th:nth-child(4), table.master td:nth-child(4) { position: sticky; left: 0; background: var(--surface); z-index: 1; font-weight: 500;
   max-width: 200px; overflow: hidden; text-overflow: ellipsis; box-shadow: 1px 0 0 var(--outline-v); }

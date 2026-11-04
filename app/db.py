@@ -85,6 +85,56 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 
+SCHEMA_V13 = """
+-- extra sides / pages of a document (back of a card, page 2 ...)
+CREATE TABLE IF NOT EXISTS doc_pages (
+    id TEXT PRIMARY KEY,
+    doc_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    label TEXT,
+    sort INTEGER NOT NULL DEFAULT 0,
+    original_name TEXT,
+    file_ext TEXT,
+    mime TEXT,
+    size INTEGER,
+    sha256 TEXT,
+    has_thumb INTEGER NOT NULL DEFAULT 0,
+    ocr_text TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pages_doc ON doc_pages(doc_id);
+
+CREATE TABLE IF NOT EXISTS shares (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    doc_ids TEXT NOT NULL,
+    method TEXT NOT NULL,
+    recipient TEXT,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_shares_user ON shares(user_id);
+
+CREATE TABLE IF NOT EXISTS activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    ts TEXT NOT NULL DEFAULT (datetime('now')),
+    action TEXT NOT NULL,
+    detail TEXT,
+    ip TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_activity_user ON activity(user_id, ts);
+"""
+
+
+def log_activity(user_id, action: str, detail: str | None = None, ip: str | None = None) -> None:
+    try:
+        run("INSERT INTO activity(user_id, action, detail, ip) VALUES(?,?,?,?)",
+            (user_id, action, (detail or "")[:500], ip))
+        run("DELETE FROM activity WHERE id NOT IN (SELECT id FROM activity ORDER BY id DESC LIMIT 5000)")
+    except Exception:
+        pass
+
+
 def connect() -> sqlite3.Connection:
     conn = getattr(_local, "conn", None)
     if conn is None:
@@ -112,8 +162,10 @@ def init() -> None:
     conn.executescript(SCHEMA)
     # migrations
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
-    if "version_group" not in cols:
-        conn.execute("ALTER TABLE documents ADD COLUMN version_group TEXT")
+    for col in ("version_group", "classes", "rto_code", "cost", "tags", "required_for", "renewal_info", "ai_text"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE documents ADD COLUMN {col} TEXT")
+    conn.executescript(SCHEMA_V13)
     conn.commit()
 
 

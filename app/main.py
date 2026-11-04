@@ -1,6 +1,7 @@
 """CertVault — self-hosted licence / ticket / induction tracker."""
 import hashlib
 import io
+import re
 import logging
 import secrets
 import uuid
@@ -11,19 +12,19 @@ from pathlib import Path
 import pyotp
 import qrcode
 import qrcode.image.svg
-from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import ai, config, db, export, extract, notify, scheduler, security, versions
+from . import ai, config, db, export, extract, notify, scheduler, security, share, versions
 from .categories import CATEGORIES, CATEGORY_BY_ID, is_register
 
 logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("certvault")
 
 STATIC = Path(__file__).parent / "static"
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 
 app = FastAPI(title="CertVault", docs_url=None, redoc_url=None, openapi_url=None)
 worker = ThreadPoolExecutor(max_workers=1)  # one document at a time — gentle on the NAS
@@ -67,6 +68,7 @@ async def headers_mw(request: Request, call_next):
 def doc_state(row) -> dict:
     d = dict(row)
     d.pop("ocr_text", None)
+    d.pop("ai_text", None)
     d["expiry_estimated"] = bool(d["expiry_estimated"])
     d["no_expiry"] = bool(d["no_expiry"])
     d["has_thumb"] = bool(d["has_thumb"])
@@ -109,8 +111,18 @@ def thumb_path(doc_id: str) -> Path:
     return config.THUMBS_DIR / f"{doc_id}.jpg"
 
 
-EDITABLE = ["title", "category", "issuer", "issuer_type", "holder_name", "licence_number",
-            "completion_date", "expiry_date", "expiry_estimated", "no_expiry", "location", "notes"]
+# fields the reader (OCR / AI) fills in
+EXTRACTED = ["title", "category", "issuer", "issuer_type", "holder_name", "licence_number",
+             "completion_date", "expiry_date", "expiry_estimated", "no_expiry", "location", "notes",
+             "classes", "rto_code"]
+
+
+def page_rows(doc_id: str):
+    return db.q("SELECT * FROM doc_pages WHERE doc_id=? ORDER BY sort, created_at", (doc_id,))
+
+
+def page_path(p) -> Path:
+    return config.FILES_DIR / f"{p['id']}.{p['file_ext']}"
 
 
 def process_document(doc_id: str, mode: str = "full"):
@@ -125,11 +137,21 @@ def process_document(doc_id: str, mode: str = "full"):
         if not text:
             text = extract.get_text(path, row["file_ext"])
             db.run("UPDATE documents SET ocr_text=? WHERE id=?", (text, doc_id))
+        files = [(path, row["file_ext"])]
+        for p in page_rows(doc_id):
+            ptext = p["ocr_text"]
+            if ptext is None:
+                ptext = extract.get_text(page_path(p), p["file_ext"])
+                db.run("UPDATE doc_pages SET ocr_text=? WHERE id=?", (ptext, p["id"]))
+            text += f"\n\n--- {p['label'] or 'Next page'} ---\n{ptext}"
+            files.append((page_path(p), p["file_ext"]))
         fields = extract.rule_extract(text, scheduler.today_local())
         source = "ocr"
+        ai_text = None
         if ai.enabled():
             try:
-                ai_fields, source = ai.analyse(path, row["file_ext"], text)
+                ai_fields, source = ai.analyse(files, text)
+                ai_text = ai_fields.pop("transcript", None)
                 for k, v in ai_fields.items():
                     if v not in (None, ""):
                         fields[k] = v
@@ -143,7 +165,7 @@ def process_document(doc_id: str, mode: str = "full"):
                 log.warning("AI analyse failed for %s: %s", doc_id, e)
         fields.setdefault("no_expiry", False)
         sets, vals = [], []
-        for k in EDITABLE:
+        for k in EXTRACTED:
             v = fields.get(k)
             if isinstance(v, bool):
                 v = int(v)
@@ -152,8 +174,8 @@ def process_document(doc_id: str, mode: str = "full"):
             sets.append(f"{k}=?")
             vals.append(v)
         new_status = "review" if row["status"] in ("processing", "review", "error") or mode == "full" else row["status"]
-        sets += ["extract_source=?", "extract_error=?", "status=?", "updated_at=datetime('now')"]
-        vals += [source, error, new_status, doc_id]
+        sets += ["extract_source=?", "extract_error=?", "status=?", "ai_text=?", "updated_at=datetime('now')"]
+        vals += [source, error, new_status, ai_text, doc_id]
         db.run(f"UPDATE documents SET {', '.join(sets)} WHERE id=?", vals)
         log.info("Processed %s via %s", doc_id, source)
         export.write_master(row["user_id"])
@@ -213,6 +235,7 @@ def login(body: LoginIn, request: Request):
     user = db.q1("SELECT * FROM users WHERE username=?", (body.username.strip(),))
     if not security.verify_password(user["pw_hash"] if user else None, body.password):
         security.record_failure(ip, body.username)
+        db.log_activity(user["id"] if user else None, "login failed", body.username[:64], ip)
         raise HTTPException(401, "Wrong username or password")
     if user["totp_secret"]:
         if not body.totp:
@@ -221,6 +244,7 @@ def login(body: LoginIn, request: Request):
             security.record_failure(ip, body.username)
             raise HTTPException(401, "Wrong 2-step code")
     security.clear_failures(body.username)
+    db.log_activity(user["id"], "login", (request.headers.get("user-agent") or "")[:120], ip)
     if security.ph.check_needs_rehash(user["pw_hash"]):
         db.run("UPDATE users SET pw_hash=? WHERE id=?", (security.hash_password(body.password), user["id"]))
     token = security.create_session(user["id"], request.headers.get("user-agent"))
@@ -314,26 +338,53 @@ def list_documents(user=Depends(security.require_user)):
     return versions.annotate([doc_state(r) for r in rows])
 
 
+async def _read_upload(f: UploadFile):
+    """Validate + normalise one uploaded file. Returns (blob, ext, mime, name) or raises ValueError(msg)."""
+    limit = config.MAX_UPLOAD_MB * 1024 * 1024
+    data = bytearray()
+    while chunk := await f.read(1024 * 1024):
+        data += chunk
+        if len(data) > limit:
+            raise ValueError(f"larger than {config.MAX_UPLOAD_MB} MB")
+    kind = extract.sniff(bytes(data[:16]), bytes(data), f.filename or "")
+    if not kind:
+        raise ValueError("Unsupported file — use PDF, photo (JPG/PNG/WEBP/HEIC) or a register spreadsheet (XLSX/CSV)")
+    try:
+        blob, ext, mime = extract.normalise_upload(bytes(data), kind[0])
+    except Exception:
+        raise ValueError("File looks damaged or couldn't be opened")
+    return blob, ext, mime, Path(f.filename or "upload").name[:200]
+
+
+def _add_page(doc_id: str, blob: bytes, ext: str, mime: str, name: str, label: str | None) -> str:
+    pid = uuid.uuid4().hex
+    (config.FILES_DIR / f"{pid}.{ext}").write_bytes(blob)
+    has_thumb = extract.make_thumbnail(config.FILES_DIR / f"{pid}.{ext}", ext, thumb_path(pid))
+    n = db.q1("SELECT COUNT(*) n FROM doc_pages WHERE doc_id=?", (doc_id,))["n"]
+    db.run("INSERT INTO doc_pages(id, doc_id, label, sort, original_name, file_ext, mime, size, sha256, has_thumb) "
+           "VALUES(?,?,?,?,?,?,?,?,?,?)",
+           (pid, doc_id, (label or ("Back" if n == 0 else f"Page {n + 2}"))[:40], n + 1, name, ext, mime, len(blob),
+            hashlib.sha256(blob).hexdigest(), int(has_thumb)))
+    return pid
+
+
 @app.post("/api/documents")
-async def upload(files: list[UploadFile] = File(...), user=Depends(security.require_user)):
+async def upload(request: Request, files: list[UploadFile] = File(...), group: int = Form(0),
+                 user=Depends(security.require_user)):
+    """group=1: the first file is the front, the rest are the back / extra pages of the SAME document."""
     if len(files) > 30:
         raise HTTPException(400, "Max 30 files per request")
-    limit = config.MAX_UPLOAD_MB * 1024 * 1024
     results = []
-    for f in files:
-        data = bytearray()
-        while chunk := await f.read(1024 * 1024):
-            data += chunk
-            if len(data) > limit:
-                raise HTTPException(413, f"{f.filename} is larger than {config.MAX_UPLOAD_MB} MB")
-        kind = extract.sniff(bytes(data[:16]), bytes(data), f.filename or "")
-        if not kind:
-            results.append({"name": f.filename, "error": "Unsupported file — use PDF, photo (JPG/PNG/WEBP/HEIC) or a register spreadsheet (XLSX/CSV)"})
-            continue
+    main_id = None
+    for idx, f in enumerate(files):
         try:
-            blob, ext, mime = extract.normalise_upload(bytes(data), kind[0])
-        except Exception:
-            results.append({"name": f.filename, "error": "File looks damaged or couldn't be opened"})
+            blob, ext, mime, name = await _read_upload(f)
+        except ValueError as e:
+            results.append({"name": f.filename, "error": str(e)})
+            continue
+        if group and main_id:
+            _add_page(main_id, blob, ext, mime, name, None)
+            results.append({"name": f.filename, "id": main_id, "page": True})
             continue
         sha = hashlib.sha256(blob).hexdigest()
         dup = db.q1("SELECT id FROM documents WHERE user_id=? AND sha256=?", (user["id"], sha))
@@ -343,13 +394,82 @@ async def upload(files: list[UploadFile] = File(...), user=Depends(security.requ
         doc_id = uuid.uuid4().hex
         (config.FILES_DIR / f"{doc_id}.{ext}").write_bytes(blob)
         has_thumb = extract.make_thumbnail(config.FILES_DIR / f"{doc_id}.{ext}", ext, thumb_path(doc_id))
-        name = Path(f.filename or "upload").name[:200]
         db.run("INSERT INTO documents(id, user_id, original_name, file_ext, mime, size, sha256, has_thumb, title, status) "
                "VALUES(?,?,?,?,?,?,?,?,?,'processing')",
                (doc_id, user["id"], name, ext, mime, len(blob), sha, int(has_thumb), Path(name).stem[:100]))
-        worker.submit(process_document, doc_id, "full")
+        if group:
+            main_id = doc_id
+        else:
+            worker.submit(process_document, doc_id, "full")
         results.append({"name": f.filename, "id": doc_id})
+    if main_id:
+        worker.submit(process_document, main_id, "full")
+    added = [r for r in results if r.get("id") and not r.get("duplicate") and not r.get("page")]
+    if added:
+        db.log_activity(user["id"], "upload", f"{len(added)} document(s)" + (" (front & back)" if group else ""),
+                        security.client_ip(request))
     return results
+
+
+@app.post("/api/documents/{doc_id}/pages")
+async def add_page(doc_id: str, request: Request, file: UploadFile = File(...), label: str = Form(""),
+                   user=Depends(security.require_user)):
+    row = get_doc(doc_id, user)
+    try:
+        blob, ext, mime, name = await _read_upload(file)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    pid = _add_page(doc_id, blob, ext, mime, name, label.strip() or None)
+    # re-read with the new side: fully if not yet confirmed, otherwise only fill blanks (keeps your edits)
+    db.run("UPDATE documents SET status='processing' WHERE id=?", (doc_id,))
+    worker.submit(process_document, doc_id, "full" if row["status"] != "ok" else "fill")
+    db.log_activity(user["id"], "add page", f"{label or 'page'} → {row['title']}", security.client_ip(request))
+    return {"id": pid}
+
+
+def get_page(doc_id: str, pid: str, user):
+    get_doc(doc_id, user)
+    p = db.q1("SELECT * FROM doc_pages WHERE id=? AND doc_id=?", (pid, doc_id))
+    if not p:
+        raise HTTPException(404)
+    return p
+
+
+@app.get("/api/documents/{doc_id}/pages/{pid}/file")
+def page_file(doc_id: str, pid: str, download: int = 0, user=Depends(security.require_user)):
+    p = get_page(doc_id, pid, user)
+    return FileResponse(page_path(p), media_type=p["mime"], filename=p["original_name"] or f"page.{p['file_ext']}",
+                        content_disposition_type="attachment" if download else "inline",
+                        headers={"Cache-Control": "private, no-store"})
+
+
+@app.get("/api/documents/{doc_id}/pages/{pid}/thumb")
+def page_thumb(doc_id: str, pid: str, user=Depends(security.require_user)):
+    p = get_page(doc_id, pid, user)
+    t = thumb_path(pid)
+    if not p["has_thumb"] or not t.exists():
+        raise HTTPException(404)
+    return FileResponse(t, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+class PageIn(BaseModel):
+    label: str = Field(max_length=40)
+
+
+@app.patch("/api/documents/{doc_id}/pages/{pid}")
+def rename_page(doc_id: str, pid: str, body: PageIn, user=Depends(security.require_user)):
+    get_page(doc_id, pid, user)
+    db.run("UPDATE doc_pages SET label=? WHERE id=?", (body.label.strip() or "Page", pid))
+    return {"ok": True}
+
+
+@app.delete("/api/documents/{doc_id}/pages/{pid}")
+def delete_page(doc_id: str, pid: str, user=Depends(security.require_user)):
+    p = get_page(doc_id, pid, user)
+    page_path(p).unlink(missing_ok=True)
+    thumb_path(pid).unlink(missing_ok=True)
+    db.run("DELETE FROM doc_pages WHERE id=?", (pid,))
+    return {"ok": True}
 
 
 @app.get("/api/documents/{doc_id}")
@@ -358,9 +478,15 @@ def get_document(doc_id: str, user=Depends(security.require_user)):
     alld = versions.annotate([doc_state(r) for r in db.q("SELECT * FROM documents WHERE user_id=?", (user["id"],))])
     d = next(x for x in alld if x["id"] == doc_id)
     d["ocr_text"] = row["ocr_text"]
+    d["ai_text"] = row["ai_text"]
     d["history"] = [{k: x[k] for k in ("id", "title", "issuer", "completion_date", "expiry_date", "state", "days_left",
                                         "superseded", "status", "icon", "color", "kind")}
                     for x in versions.group_of(alld, doc_id)]
+    d["pages"] = [{k: p[k] for k in ("id", "label", "file_ext", "has_thumb", "size", "original_name")}
+                  for p in page_rows(doc_id)]
+    d["shares"] = [dict(r) for r in db.q(
+        "SELECT method, recipient, created_at FROM shares WHERE user_id=? AND (',' || doc_ids || ',') LIKE ? "
+        "ORDER BY id DESC LIMIT 20", (user["id"], f"%,{doc_id},%"))]
     return d
 
 
@@ -379,11 +505,17 @@ class DocIn(BaseModel):
     notes: str | None = Field(None, max_length=4000)
     reminder_days: str | None = Field(None, max_length=100)
     version_group: str | None = Field(None, max_length=20)
+    classes: str | None = Field(None, max_length=1000)
+    rto_code: str | None = Field(None, max_length=40)
+    cost: str | None = Field(None, max_length=40)
+    tags: str | None = Field(None, max_length=300)
+    required_for: str | None = Field(None, max_length=500)
+    renewal_info: str | None = Field(None, max_length=1000)
 
 
 @app.patch("/api/documents/{doc_id}")
-def update_document(doc_id: str, body: DocIn, user=Depends(security.require_user)):
-    get_doc(doc_id, user)
+def update_document(doc_id: str, body: DocIn, request: Request, user=Depends(security.require_user)):
+    row = get_doc(doc_id, user)
     data = body.model_dump(exclude_unset=True)
     for k in ("completion_date", "expiry_date"):
         if data.get(k):
@@ -401,6 +533,8 @@ def update_document(doc_id: str, body: DocIn, user=Depends(security.require_user
         data["expiry_date"] = None
     if "version_group" in data and data["version_group"] not in (None, "", "solo"):
         raise HTTPException(400, "version_group must be 'solo' or empty")
+    if data.get("tags"):
+        data["tags"] = ", ".join(dict.fromkeys(t.strip() for t in data["tags"].split(",") if t.strip()))
     for k, v in list(data.items()):
         if isinstance(v, bool):
             data[k] = int(v)
@@ -408,21 +542,157 @@ def update_document(doc_id: str, body: DocIn, user=Depends(security.require_user
             data[k] = v.strip() or None
     if not data:  # "Looks right" — just confirm
         db.run("UPDATE documents SET status='ok', updated_at=datetime('now') WHERE id=? AND user_id=?", (doc_id, user["id"]))
+        export.write_master(user["id"])
         return doc_state(get_doc(doc_id, user))
     sets = ", ".join(f"{k}=?" for k in data) + ", status='ok', updated_at=datetime('now')"
     db.run(f"UPDATE documents SET {sets} WHERE id=? AND user_id=?", (*data.values(), doc_id, user["id"]))
+    db.log_activity(user["id"], "edit", row["title"], security.client_ip(request))
     export.write_master(user["id"])
     return doc_state(get_doc(doc_id, user))
 
 
 @app.delete("/api/documents/{doc_id}")
-def delete_document(doc_id: str, user=Depends(security.require_user)):
+def delete_document(doc_id: str, request: Request, user=Depends(security.require_user)):
     row = get_doc(doc_id, user)
+    for p in page_rows(doc_id):
+        page_path(p).unlink(missing_ok=True)
+        thumb_path(p["id"]).unlink(missing_ok=True)
     file_path(row).unlink(missing_ok=True)
     thumb_path(doc_id).unlink(missing_ok=True)
     db.run("DELETE FROM documents WHERE id=?", (doc_id,))
+    db.log_activity(user["id"], "delete", row["title"], security.client_ip(request))
     export.write_master(user["id"])
     return {"ok": True}
+
+
+# ---- sharing ------------------------------------------------------------------------------
+
+def _docs_for(user, ids: list[str]):
+    ids = [i for i in dict.fromkeys(ids) if i][:200]
+    if not ids:
+        raise HTTPException(400, "Pick at least one document")
+    rows = db.q(f"SELECT * FROM documents WHERE user_id=? AND id IN ({','.join('?' * len(ids))})", (user["id"], *ids))
+    if len(rows) != len(ids):
+        raise HTTPException(404, "Document not found")
+    order = {i: n for n, i in enumerate(ids)}
+    return sorted(rows, key=lambda r: order[r["id"]])
+
+
+EMAIL_RX = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[a-z]{2,}$", re.I)
+
+
+class ShareEmailIn(BaseModel):
+    ids: list[str]
+    to: str = Field(max_length=500)
+    cc: str | None = Field(None, max_length=500)
+    message: str | None = Field(None, max_length=4000)
+    attach_files: bool = True
+    attach_list: bool = False
+
+
+def _emails(s: str | None) -> list[str]:
+    out = [e.strip() for e in re.split(r"[,;\s]+", s or "") if e.strip()]
+    bad = [e for e in out if not EMAIL_RX.match(e)]
+    if bad:
+        raise HTTPException(400, f"Not a valid email: {bad[0]}")
+    return out
+
+
+@app.post("/api/share/email")
+def share_email(body: ShareEmailIn, request: Request, user=Depends(security.require_user)):
+    docs = _docs_for(user, body.ids)
+    to, cc = _emails(body.to), _emails(body.cc)
+    if not to:
+        raise HTTPException(400, "Who should it go to?")
+    if len(to) + len(cc) > 10:
+        raise HTTPException(400, "Max 10 recipients")
+    try:
+        share.send_email(user["id"], user["username"], docs, to, cc, body.message or "", body.attach_files, body.attach_list)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        log.exception("share email failed")
+        raise HTTPException(502, f"Email server said: {e}")
+    rec = ", ".join(to + cc)
+    db.run("INSERT INTO shares(user_id, doc_ids, method, recipient) VALUES(?,?,?,?)",
+           (user["id"], ",".join(d["id"] for d in docs), "email", rec))
+    db.log_activity(user["id"], "share email", f"{len(docs)} doc(s) → {rec}", security.client_ip(request))
+    export.write_master(user["id"])
+    return {"ok": True, "sent_to": rec}
+
+
+class ShareLogIn(BaseModel):
+    ids: list[str]
+    method: str = Field(max_length=20)
+    recipient: str | None = Field(None, max_length=200)
+
+
+@app.post("/api/share/log")
+def share_log(body: ShareLogIn, request: Request, user=Depends(security.require_user)):
+    """Record a share done on the phone (share sheet / copy) so it shows in the history."""
+    docs = _docs_for(user, body.ids)
+    method = body.method if body.method in ("phone", "copy", "zip", "download") else "other"
+    db.run("INSERT INTO shares(user_id, doc_ids, method, recipient) VALUES(?,?,?,?)",
+           (user["id"], ",".join(d["id"] for d in docs), method, (body.recipient or "").strip() or None))
+    db.log_activity(user["id"], f"share {method}", f"{len(docs)} doc(s)", security.client_ip(request))
+    return {"ok": True}
+
+
+@app.get("/api/share/zip")
+def share_zip(ids: str, request: Request, user=Depends(security.require_user)):
+    docs = _docs_for(user, ids.split(","))
+    data = share.zip_pack(user["id"], user["username"], docs)
+    db.run("INSERT INTO shares(user_id, doc_ids, method) VALUES(?,?,?)", (user["id"], ",".join(d["id"] for d in docs), "zip"))
+    db.log_activity(user["id"], "ticket pack", f"{len(docs)} doc(s)", security.client_ip(request))
+    fn = f"{export.safe_name(db.get_setting(user['id'], 'full_name') or user['username'])} - ticket pack {date.today():%Y-%m-%d}.zip"
+    return Response(data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{fn}"', "Cache-Control": "no-store"})
+
+
+@app.get("/api/share/text")
+def share_text(ids: str, user=Depends(security.require_user)):
+    return {"text": share.summary_text(_docs_for(user, ids.split(",")))}
+
+
+@app.get("/api/share/recent")
+def share_recent(user=Depends(security.require_user)):
+    seen = []
+    for r in db.q("SELECT recipient FROM shares WHERE user_id=? AND method='email' AND recipient IS NOT NULL "
+                  "ORDER BY id DESC LIMIT 50", (user["id"],)):
+        for e in r["recipient"].split(", "):
+            if e not in seen:
+                seen.append(e)
+    return seen[:8]
+
+
+# ---- calendar ---------------------------------------------------------------------------------
+
+@app.get("/api/calendar.ics")
+def calendar_all(ids: str | None = None, user=Depends(security.require_user)):
+    rows = db.q("SELECT * FROM documents WHERE user_id=? AND expiry_date IS NOT NULL", (user["id"],))
+    old = versions.superseded_ids(db.q("SELECT * FROM documents WHERE user_id=?", (user["id"],)))
+    if ids:
+        want = set(ids.split(","))
+        rows = [r for r in rows if r["id"] in want]
+    else:
+        rows = [r for r in rows if r["id"] not in old]
+    body = share.ics(rows, db.get_setting(user["id"], "reminder_days") or scheduler.DEFAULT_DAYS)
+    name = "certvault-expiries.ics" if not ids else "certvault-reminder.ics"
+    return Response(body, media_type="text/calendar; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
+# ---- activity log ---------------------------------------------------------------------------------
+
+@app.get("/api/activity")
+def activity(user=Depends(security.require_user)):
+    if user["is_admin"]:
+        rows = db.q("SELECT a.ts, a.action, a.detail, a.ip, u.username FROM activity a LEFT JOIN users u ON u.id=a.user_id "
+                    "ORDER BY a.id DESC LIMIT 200")
+    else:
+        rows = db.q("SELECT a.ts, a.action, a.detail, a.ip, ? AS username FROM activity a WHERE user_id=? "
+                    "ORDER BY a.id DESC LIMIT 200", (user["username"], user["id"]))
+    return [dict(r) for r in rows]
 
 
 @app.post("/api/documents/{doc_id}/rescan")
@@ -488,7 +758,8 @@ def master_csv(user=Depends(security.require_user)):
 
 # ---- settings -------------------------------------------------------------------------
 
-USER_KEYS = ["reminder_days", "remind_expired_weekly", "ntfy_url", "ntfy_token", "email_to", "ha_webhook_url"]
+USER_KEYS = ["reminder_days", "remind_expired_weekly", "ntfy_url", "ntfy_token", "email_to", "ha_webhook_url",
+             "full_name", "company", "phone", "my_email"]
 GLOBAL_KEYS = ["ai_provider", "anthropic_api_key", "anthropic_model", "ollama_url", "ollama_model",
                "smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_from", "notify_hour", "public_url"]
 SECRET_KEYS = {"ntfy_token", "anthropic_api_key", "smtp_pass"}
@@ -518,7 +789,8 @@ class SettingsIn(BaseModel):
 
 
 @app.put("/api/settings")
-def put_settings(body: SettingsIn, user=Depends(security.require_user)):
+def put_settings(body: SettingsIn, request: Request, user=Depends(security.require_user)):
+    db.log_activity(user["id"], "settings", ", ".join(list(body.user) + list(body.global_))[:200], security.client_ip(request))
     for k, v in body.user.items():
         if k not in USER_KEYS or v == MASK:
             continue
@@ -594,6 +866,9 @@ def delete_user(uid: int, user=Depends(security.require_admin)):
     if uid == user["id"]:
         raise HTTPException(400, "You can't delete yourself")
     for r in db.q("SELECT id, file_ext FROM documents WHERE user_id=?", (uid,)):
+        for p in page_rows(r["id"]):
+            page_path(p).unlink(missing_ok=True)
+            thumb_path(p["id"]).unlink(missing_ok=True)
         (config.FILES_DIR / f"{r['id']}.{r['file_ext']}").unlink(missing_ok=True)
         thumb_path(r["id"]).unlink(missing_ok=True)
     db.run("DELETE FROM users WHERE id=?", (uid,))

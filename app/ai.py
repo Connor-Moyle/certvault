@@ -19,7 +19,7 @@ import httpx
 from PIL import Image
 
 from . import db
-from .categories import CATEGORIES, CATEGORY_BY_ID
+from .categories import CATEGORIES, CATEGORY_BY_ID, HRWL_CLASSES
 from .extract import TEXT_KINDS, page_images
 
 log = logging.getLogger("certvault.ai")
@@ -31,8 +31,8 @@ DEFAULTS = {
     "ollama_model": "qwen2.5vl:7b",
 }
 
-FIELDS = ["title", "category", "issuer", "issuer_type", "holder_name", "licence_number",
-          "completion_date", "expiry_date", "expiry_estimated", "no_expiry", "location", "notes"]
+FIELDS = ["transcript", "title", "category", "issuer", "issuer_type", "holder_name", "licence_number",
+          "completion_date", "expiry_date", "expiry_estimated", "no_expiry", "location", "notes", "classes", "rto_code"]
 
 
 def ai_settings() -> dict:
@@ -45,6 +45,9 @@ def enabled() -> bool:
     if s["ai_provider"] == "anthropic":
         return bool(s.get("anthropic_api_key"))
     return s["ai_provider"] == "ollama"
+
+
+HRWL_LIST = ", ".join(f"{k} = {v}" for k, v in HRWL_CLASSES.items() if k != "CO")
 
 
 def build_prompt(ocr_text: str) -> str:
@@ -71,7 +74,13 @@ Return ONLY a JSON object with exactly these keys:
   "expiry_estimated": true if the document does not print an expiry and you estimated it from typical industry validity,
   "no_expiry": true if this type genuinely does not expire (e.g. WA white card, most statements of attainment) and no expiry is printed,
   "location": where it was completed / training venue / site (suburb + state) or null,
-  "notes": anything useful in one line (licence classes, unit codes, RTO number, conditions) or null
+  "classes": every licence class / endorsement / unit it covers, each spelled out, separated by "; "
+             (e.g. "CV – Vehicle loading crane (10 metre-tonnes or more); DG – Dogging; RB – Basic rigging"
+             or "C – Car; HR – Heavy rigid") or null,
+  "rto_code": the RTO / training provider number if printed, or null,
+  "notes": anything else useful in one line (conditions, restrictions, endorsements, unit codes) or null,
+  "transcript": a clean, correctly spelled transcription of ALL readable text on the document (every side/page),
+                laid out line by line as it appears, fixing OCR mistakes. Leave out signatures/barcodes. Max ~3000 characters.
 }}
 
 Rules:
@@ -79,6 +88,10 @@ Rules:
 - Never use a date of birth as completion or expiry.
 - If only a month/year expiry is printed, use the last day of that month.
 - If there is no printed expiry but the category has a typical validity, set expiry_date = completion_date + that validity and expiry_estimated = true.
+- The document may have several images: front, back and extra pages of the SAME card/certificate. Combine them.
+  Licence classes and expiry dates are often on the back.
+- High Risk Work Licence class codes (list EVERY class shown, with its name):
+  {HRWL_LIST}
 - REGISTERS (equipment / inspection registers such as a rigging gear register, harness register, test & tag register,
   plant register): use a [REGISTER] category. completion_date = the most recent inspection date, expiry_date = the
   EARLIEST upcoming "next inspection / retest / due" date of any item in it, issuer = who keeps or inspects it,
@@ -137,34 +150,45 @@ def clean(result: dict) -> dict:
         out["category"] = None
     if out["issuer_type"] not in ("government", "training", "company", "other"):
         out["issuer_type"] = None
-    for k in ("title", "issuer", "holder_name", "licence_number", "location", "notes"):
+    if out.get("transcript") and isinstance(out["transcript"], str):
+        out["transcript"] = out["transcript"][:6000]
+    for k in ("title", "issuer", "holder_name", "licence_number", "location", "notes", "classes", "rto_code"):
         if out.get(k) and not isinstance(out[k], str):
             out[k] = str(out[k])
         if out.get(k):
-            out[k] = out[k][:300]
+            out[k] = out[k][:600]
     return out
 
 
-def _anthropic(path: Path, ext: str, prompt: str, s: dict) -> dict:
-    content = []
-    if ext in TEXT_KINDS:
-        pass  # spreadsheet: the text in the prompt is the whole document
-    elif ext == "pdf" and path.stat().st_size < 20 * 1024 * 1024:
-        content.append({"type": "document", "source": {
-            "type": "base64", "media_type": "application/pdf",
-            "data": base64.b64encode(path.read_bytes()).decode()}})
-    else:
+Files = list[tuple[Path, str]]  # (path, ext) — main file first, then back / extra pages
+
+
+def _anthropic(files: Files, prompt: str, s: dict) -> dict:
+    content, n_img = [], 0
+    for i, (path, ext) in enumerate(files):
+        if ext in TEXT_KINDS:
+            continue  # spreadsheet: its text is already in the prompt
+        if ext == "pdf" and path.stat().st_size < 20 * 1024 * 1024:
+            content.append({"type": "document", "source": {
+                "type": "base64", "media_type": "application/pdf",
+                "data": base64.b64encode(path.read_bytes()).decode()}})
+            continue
         for im in page_images(path, ext)[:3]:
+            if n_img >= 6:
+                break
+            label = "FRONT" if i == 0 else f"SIDE / PAGE {i + 1}"
+            content.append({"type": "text", "text": f"[{label}]"})
             content.append({"type": "image", "source": {
                 "type": "base64", "media_type": "image/jpeg", "data": _img_b64(im)}})
+            n_img += 1
     content.append({"type": "text", "text": prompt})
     r = httpx.post(
         "https://api.anthropic.com/v1/messages",
         headers={"x-api-key": s["anthropic_api_key"], "anthropic-version": "2023-06-01",
                  "content-type": "application/json"},
-        json={"model": s["anthropic_model"], "max_tokens": 1024,
+        json={"model": s["anthropic_model"], "max_tokens": 3500,
               "messages": [{"role": "user", "content": content}]},
-        timeout=120,
+        timeout=180,
     )
     if r.status_code >= 400:
         raise RuntimeError(f"Anthropic API {r.status_code}: {r.text[:300]}")
@@ -173,8 +197,12 @@ def _anthropic(path: Path, ext: str, prompt: str, s: dict) -> dict:
     return _parse_json(text)
 
 
-def _ollama(path: Path, ext: str, prompt: str, s: dict) -> dict:
-    imgs = [_img_b64(im, 1280) for im in page_images(path, ext)[:2]]
+def _ollama(files: Files, prompt: str, s: dict) -> dict:
+    imgs = []
+    for path, ext in files:
+        for im in page_images(path, ext)[:2]:
+            if len(imgs) < 4:
+                imgs.append(_img_b64(im, 1280))
     r = httpx.post(
         s["ollama_url"].rstrip("/") + "/api/chat",
         json={"model": s["ollama_model"], "stream": False, "format": "json",
@@ -187,16 +215,16 @@ def _ollama(path: Path, ext: str, prompt: str, s: dict) -> dict:
     return _parse_json(r.json()["message"]["content"])
 
 
-def analyse(path: Path, ext: str, ocr_text: str) -> tuple[dict, str]:
+def analyse(files: Files, ocr_text: str) -> tuple[dict, str]:
     """Returns (fields, source_label). Raises on failure."""
     s = ai_settings()
     prompt = build_prompt(ocr_text)
     if s["ai_provider"] == "anthropic":
         if not s.get("anthropic_api_key"):
             raise RuntimeError("No Anthropic API key set")
-        return clean(_anthropic(path, ext, prompt, s)), f"ai:{s['anthropic_model']}"
+        return clean(_anthropic(files, prompt, s)), f"ai:{s['anthropic_model']}"
     if s["ai_provider"] == "ollama":
-        return clean(_ollama(path, ext, prompt, s)), f"ai:{s['ollama_model']}"
+        return clean(_ollama(files, prompt, s)), f"ai:{s['ollama_model']}"
     raise RuntimeError("AI is turned off")
 
 

@@ -23,6 +23,8 @@ COLUMNS = [
     ("Status", 12), ("Days left", 9), ("Version", 10), ("Title", 40), ("Kind", 10), ("Type", 26), ("Issued by", 30),
     ("Issuer type", 16), ("Holder", 22), ("Number", 18), ("Completed / last inspected", 16),
     ("Expiry / next due", 16), ("Expiry estimated", 10), ("Doesn't expire", 10), ("Location", 26),
+    ("Classes / endorsements", 40), ("RTO code", 10), ("Cost", 10), ("Tags", 20), ("Required for", 26),
+    ("How to renew", 30), ("Sides / pages", 8), ("Last shared", 24),
     ("Notes", 50), ("Reminder days", 14), ("Review status", 12), ("Read by", 20), ("File name", 30),
     ("Uploaded", 16), ("Last updated", 16), ("ID", 34),
 ]
@@ -54,13 +56,21 @@ def _dt(v):
         return None
 
 
-def rows_for(user_id: int) -> list[dict]:
+def rows_for(user_id: int, only_ids: set | None = None) -> list[dict]:
     today = scheduler.today_local()
     default_days = db.get_setting(user_id, "reminder_days") or scheduler.DEFAULT_DAYS
     out = []
     all_rows = db.q("SELECT * FROM documents WHERE user_id=?", (user_id,))
     old = versions.superseded_ids(all_rows)
+    pages = {r["doc_id"]: r["n"] for r in db.q(
+        "SELECT doc_id, COUNT(*) n FROM doc_pages WHERE doc_id IN (SELECT id FROM documents WHERE user_id=?) GROUP BY doc_id", (user_id,))}
+    last_share = {}
+    for sh in db.q("SELECT doc_ids, recipient, method, created_at FROM shares WHERE user_id=? ORDER BY id", (user_id,)):
+        for did in sh["doc_ids"].split(","):
+            last_share[did] = f"{sh['recipient'] or sh['method']} ({(_dt(sh['created_at']) or datetime.now()):%d/%m/%Y})"
     for r in all_rows:
+        if only_ids is not None and r["id"] not in only_ids:
+            continue
         cat = CATEGORY_BY_ID.get(r["category"] or "other", CATEGORY_BY_ID["other"])
         exp = _d(r["expiry_date"])
         days = (exp - today).days if exp else None
@@ -87,6 +97,14 @@ def rows_for(user_id: int) -> list[dict]:
             "Expiry estimated": "Yes" if r["expiry_estimated"] else "",
             "Doesn't expire": "Yes" if r["no_expiry"] else "",
             "Location": r["location"],
+            "Classes / endorsements": r["classes"],
+            "RTO code": r["rto_code"],
+            "Cost": r["cost"],
+            "Tags": r["tags"],
+            "Required for": r["required_for"],
+            "How to renew": r["renewal_info"],
+            "Sides / pages": 1 + pages.get(r["id"], 0),
+            "Last shared": last_share.get(r["id"]),
             "Notes": r["notes"],
             "Reminder days": r["reminder_days"] or f"Default ({default_days})",
             "Review status": "Confirmed" if r["status"] == "ok" else "Needs check" if r["status"] == "review" else r["status"],
@@ -104,8 +122,8 @@ def rows_for(user_id: int) -> list[dict]:
     return out
 
 
-def xlsx_bytes(user_id: int, username: str) -> bytes:
-    rows = rows_for(user_id)
+def xlsx_bytes(user_id: int, username: str, only_ids: set | None = None) -> bytes:
+    rows = rows_for(user_id, only_ids)
     wb = Workbook()
     ws = wb.active
     ws.title = "Master List"

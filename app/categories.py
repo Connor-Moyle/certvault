@@ -170,3 +170,26 @@ ISSUERS = [
     ("amplitel", "Amplitel", "company"),
     ("future engineering", "Future Engineering & Communication", "company"),
 ]
+
+# High Risk Work Licence classes (Safe Work Australia national classes)
+HRWL_CLASSES = {
+    "SB": "Basic scaffolding", "SI": "Intermediate scaffolding", "SA": "Advanced scaffolding",
+    "DG": "Dogging", "RB": "Basic rigging", "RI": "Intermediate rigging", "RA": "Advanced rigging",
+    "CT": "Tower crane", "CS": "Self-erecting tower crane", "CD": "Derrick crane", "CP": "Portal boom crane",
+    "CB": "Bridge and gantry crane", "CV": "Vehicle loading crane (10 metre-tonnes or more)",
+    "CN": "Non-slewing mobile crane (over 3 t)", "C2": "Slewing mobile crane (up to 20 t)",
+    "C6": "Slewing mobile crane (up to 60 t)", "C1": "Slewing mobile crane (up to 100 t)",
+    "C0": "Slewing mobile crane (over 100 t)", "CO": "Slewing mobile crane (over 100 t)",
+    "PB": "Concrete placing boom", "HM": "Materials hoist", "HP": "Personnel and materials hoist",
+    "WP": "Boom-type elevating work platform (boom 11 m or more)", "LF": "Forklift truck",
+    "LO": "Order-picking forklift truck", "RS": "Reach stacker (over 3 t)",
+    "BS": "Standard boiler operation", "BA": "Advanced boiler operation",
+    "TO": "Turbine operation", "ES": "Reciprocating steam engine operation",
+}
+
+# WA driver's licence classes
+DL_CLASSES = {
+    "C": "Car (up to 4.5 t GVM, 12 seats)", "LR": "Light rigid", "MR": "Medium rigid", "HR": "Heavy rigid",
+    "HC": "Heavy combination", "MC": "Multi-combination", "R": "Motorcycle", "R-E": "Motorcycle (learner approved, LAMS)",
+    "RE": "Motorcycle (LAMS)", "F": "Tractor / farm vehicle",
+}

@@ -38,7 +38,11 @@ def _email(s: dict, g: dict, title: str, body: str):
             smtp.send_message(msg)
     else:
         with smtplib.SMTP(host, port, timeout=30) as smtp:
-            smtp.starttls(context=ctx)
+            smtp.ehlo()
+            if smtp.has_extn("starttls"):
+                smtp.starttls(context=ctx)
+            elif g.get("smtp_user"):
+                raise RuntimeError("Email server doesn't offer encryption — not sending the password in the clear")
             if g.get("smtp_user"):
                 smtp.login(g["smtp_user"], g.get("smtp_pass", ""))
             smtp.send_message(msg)

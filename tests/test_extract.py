@@ -68,3 +68,18 @@ def test_csv_sniff():
     data = b"Item,Tested,Next test due\nDrill,01/09/2026,01/12/2026\n"
     assert sniff(data[:16], data, "test-tag.csv") == ("csv", "text/csv")
     assert sniff(data[:16], data, "notes.txt") is None
+
+def test_hrwl_classes():
+    t = """WorkSafe Western Australia
+    LICENCE TO PERFORM HIGH RISK WORK
+    Licence No. HRW123456  Expiry 04/03/2030
+    Classes: CV DG RB WP"""
+    r = rule_extract(t, TODAY)
+    assert r["category"] == "hrwl"
+    assert "CV – Vehicle loading crane" in r["classes"]
+    assert "DG – Dogging" in r["classes"] and "RB – Basic rigging" in r["classes"] and r["classes"].count("–") == 4
+    assert r["expiry_date"] == "2030-03-04"
+
+def test_driver_classes():
+    r = rule_extract("WESTERN AUSTRALIA DRIVER'S LICENCE\nClass: C, HR\nExpiry 12 JUN 2029", TODAY)
+    assert r["classes"].startswith("C – Car") and "HR – Heavy rigid" in r["classes"]
