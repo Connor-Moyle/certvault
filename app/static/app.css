@@ -447,3 +447,52 @@ table.master tr.old td { opacity: .55; }
 dialog .item .h, dialog .item .s { white-space: normal; }
 dialog .item { padding: 12px; gap: 12px; }
 dialog .item .lead { width: 40px; height: 40px; }
+
+/* v1.3: sides gallery */
+.sides { display: flex; gap: 10px; overflow-x: auto; padding: 0 16px 16px; scrollbar-width: none; }
+.sides::-webkit-scrollbar { display: none; }
+.side { flex: none; width: 150px; display: flex; flex-direction: column; gap: 6px; cursor: pointer; }
+.sides.small { padding: 12px 0 0; }
+.sides.small .side { width: 110px; }
+.side-img { display: block; aspect-ratio: 1.586; border-radius: var(--r-md); overflow: hidden; background: var(--sc-high); }
+.side-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.side-ph { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: var(--on-surface-v); font-size: 12px; font-weight: 500; }
+.side.add .side-img { border: 2px dashed var(--outline-v); background: transparent; }
+.side.add .side-ph { color: var(--primary); }
+.side-cap { display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: var(--on-surface-v); padding: 0 2px; min-height: 28px; }
+.icon-btn.sm { width: 28px; height: 28px; }
+/* classes */
+.class-list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.class-row { display: flex; gap: 10px; align-items: baseline; }
+.class-row .code { flex: none; min-width: 34px; text-align: center; font-weight: 700; font-size: 13px; padding: 2px 6px; border-radius: 6px; background: var(--primary-c); color: var(--on-primary-c); }
+.tag-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.tag-row .chip { text-decoration: none; }
+/* text toggle */
+.seg.small { height: 36px; margin: 0 16px 8px; }
+.seg.small button { font-size: 13px; }
+.hint-p { margin: 0 16px 8px; color: var(--on-surface-v); font-size: 13px; }
+details summary { display: flex; align-items: center; gap: 6px; }
+/* share sheet */
+.share-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
+.share-opt { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 16px; border-radius: var(--r-lg); border: 0;
+  background: var(--sc-highest); color: var(--on-surface); text-align: left; font: 500 15px var(--font); cursor: pointer; text-decoration: none; }
+.share-opt .icon { color: var(--primary); margin-bottom: 4px; }
+.share-opt small { color: var(--on-surface-v); font-weight: 400; font-size: 12px; line-height: 1.3; }
+.share-opt:disabled { opacity: .45; cursor: default; }
+.chips.wrap { flex-wrap: wrap; padding: 8px 0 0; overflow: visible; }
+.offscreen { position: fixed; left: -9999px; top: 0; }
+/* multi-select */
+.list.selecting .item.sel { background: var(--secondary-c) !important; }
+.list.selecting .item.sel .lead { background: var(--primary); color: var(--on-primary); }
+.actionbar { position: fixed; z-index: 22; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + 12px + env(safe-area-inset-bottom));
+  width: min(728px, calc(100% - 32px)); display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 10px 10px 20px; border-radius: var(--r-xl); background: var(--sc-highest); box-shadow: 0 3px 12px rgba(0,0,0,.2); font-weight: 500; }
+/* compliance */
+.card.compliance { display: flex; align-items: center; gap: 16px; padding: 16px 8px 16px 16px; }
+.card.compliance .body { flex: 1; }
+.card.compliance p { color: var(--on-surface-v); }
+.ring { --p: 0; --c: var(--ok); width: 68px; height: 68px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  background: conic-gradient(var(--c) calc(var(--p) * 1%), var(--sc-highest) 0); }
+.ring.warn { --c: var(--warn); } .ring.bad { --c: var(--bad); }
+.ring span { width: 54px; height: 54px; border-radius: 50%; background: var(--sc-low); display: grid; place-items: center; font: 500 16px var(--font-display); }
+.list.act .item { min-height: 56px; cursor: default; }

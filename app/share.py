@@ -25,7 +25,7 @@ def _fmt(iso: str | None) -> str:
 
 
 def safe(name: str) -> str:
-    return re.sub(r"[^\w\-. ()&]+", "_", name or "document").strip()[:90] or "document"
+    return re.sub(r"[^\w\-. ()&']+", "_", name or "document").strip()[:90] or "document"
 
 
 def doc_files(doc) -> list[tuple[str, "Path", str]]:

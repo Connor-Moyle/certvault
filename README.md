@@ -13,6 +13,18 @@ Upload a photo or PDF. **AI reads the file and fills in the details**: type, who
 - **Import a whole folder.** Tap **Import folder** (or drag a folder onto the page on a PC). Every PDF, photo and register spreadsheet inside, including sub-folders, is uploaded in batches. Duplicates are skipped and non-cert files ignored.
 - **Registers.** Rigging gear, height safety gear, test & tag, plant/equipment and other registers, as PDF, photo or **Excel/CSV**. The last inspection date and the earliest *next inspection due* date are pulled out, and reminders say "inspection due" instead of "expires".
 - **Renewals / previous versions.** Upload a renewed ticket and it's grouped with the older copies of the same cert. Only the newest sends reminders. The ⋮ menu on a document shows **Previous / expired versions**, and you can mark one *Not a renewal — keep separate*.
+- **Front & back / multi-page.** Turn on *Front & back of one card* and take the front, then the back. Or add a back/extra page to any document later. The AI and OCR read every side.
+- **Licence classes decoded.** HRWL classes are picked up and spelled out (e.g. **CV – Vehicle loading crane**, DG – Dogging, RB – Basic rigging, WP – Boom-type EWP). WA driver's licence classes (C, LR, MR, HR, HC, MC, R) work the same way. You can also type just the codes when editing and they're expanded for you.
+- **More detail per document:** classes/endorsements, RTO code, *required for* (clients/sites), how to renew, cost, tags.
+- **Share / send to someone.** Use the share button on any document, select several in *Documents*, or send everything current from the home screen or the master list:
+  - **Email it.** Sent straight from CertVault with every side attached, an optional summary spreadsheet, and your name/phone as the signature and reply-to.
+  - **Phone apps.** The Android share sheet (WhatsApp, Gmail, Messages…) with the actual files. This needs HTTPS, see *Access away from home*.
+  - **Ticket pack.** A ZIP of all the files sorted by type, plus a summary and a spreadsheet.
+  - **Copy details.** Text you can paste anywhere.
+  - Every share is logged on the document ("Shared with …").
+- **Add to calendar.** A `.ics` file per document or for all expiries, with alarms that match your reminder days.
+- **Cleaner scanned text.** Photos are straightened, shadows are removed, upside-down/sideways shots are detected and junk is filtered out. With AI on you get a clean transcript as well.
+- **Activity log.** Logins (including failed ones), uploads, edits, shares and settings changes.
 - **Master list.** One text-only list of every document with every field. It's on the *Master list* tab (filter, print, tap a row to open it) and downloads as Excel or CSV. An always-current copy is also saved on the NAS at `/mnt/CME_Nas/certvault/exports/<you> - CertVault Master List.xlsx` (and `.csv`).
 - **AI autofill.** Claude (Anthropic API) or your own **Ollama** vision model looks at every file. OCR text is also sent to help it.
   - Without AI it still works: Tesseract OCR and Australian/WA-specific rules pick out dates, unit codes, RTOs and issuers.
