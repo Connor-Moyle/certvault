@@ -45,3 +45,26 @@ def test_ocr_letter_o_in_codes():
     assert r["category"] == "first_aid"
     assert r["title"] == "HLTAID011 Provide First Aid"
     assert r["location"] == "Kewdale WA 6105"
+
+def test_rigging_register_spreadsheet(tmp_path):
+    from openpyxl import Workbook
+    from datetime import datetime
+    from app.extract import sniff, spreadsheet_text
+    wb = Workbook(); ws = wb.active; ws.title = "Rigging Gear"
+    ws.append(["Item", "WLL", "Serial", "Last inspection", "Next inspection due", "Colour code"])
+    ws.append(["Round sling 2t", "2t", "RS-001", datetime(2026, 9, 1), datetime(2026, 12, 1), "Green"])
+    ws.append(["Bow shackle 3.25t", "3.25t", "SH-014", datetime(2026, 9, 1), datetime(2026, 11, 20), "Green"])
+    ws.append(["Chain block 1t", "1t", "CB-003", datetime(2026, 6, 1), datetime(2027, 6, 1), "Green"])
+    p = tmp_path / "gear.xlsx"; wb.save(p)
+    data = p.read_bytes()
+    assert sniff(data[:16], data, "gear.xlsx")[0] == "xlsx"
+    r = rule_extract(spreadsheet_text(p, "xlsx"), TODAY)
+    assert r["category"] == "rigging_register"
+    assert r["expiry_date"] == "2026-11-20"   # earliest upcoming due item
+    assert r["completion_date"] == "2026-09-01"
+
+def test_csv_sniff():
+    from app.extract import sniff
+    data = b"Item,Tested,Next test due\nDrill,01/09/2026,01/12/2026\n"
+    assert sniff(data[:16], data, "test-tag.csv") == ("csv", "text/csv")
+    assert sniff(data[:16], data, "notes.txt") is None

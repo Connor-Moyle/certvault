@@ -57,7 +57,8 @@ function lead(d) {
 }
 
 function docItem(d) {
-  const sub = [d.issuer, d.expiry_date ? `Exp ${fmtDate(d.expiry_date)}${d.expiry_estimated ? " (est.)" : ""}` : null].filter(Boolean).join(" · ") || d.category_name;
+  const sub = [d.issuer, d.expiry_date ? `${d.kind === "register" ? "Due" : "Exp"} ${fmtDate(d.expiry_date)}${d.expiry_estimated ? " (est.)" : ""}` : null,
+    d.superseded ? "Previous version" : d.versions > 1 ? `${d.versions} versions` : null].filter(Boolean).join(" · ") || d.category_name;
   const review = d.status === "review" ? `<span class="chip review">${icon("edit")}Check</span>` : "";
   return `<a class="item" href="#/doc/${d.id}">${lead(d)}
     <div class="body"><div class="h">${esc(d.title || d.original_name || "Untitled")}</div><div class="s">${esc(sub)}</div>
@@ -87,7 +88,7 @@ function chrome(showNav, fab = false) {
     const base = use.getAttribute("href").replace("-fill", "");
     use.setAttribute("href", on ? base + "-fill" : base);
   });
-  const attention = S.docs.filter((d) => d.state === "expired" || d.state === "soon").length;
+  const attention = S.docs.filter((d) => !d.superseded && (d.state === "expired" || d.state === "soon")).length;
   const pill = $('[data-nav="home"] .pill');
   let b = $(".badge", pill);
   if (attention) { if (!b) { b = document.createElement("span"); b.className = "badge"; pill.append(b); } b.textContent = attention; }
@@ -177,7 +178,7 @@ function viewLogin() {
 // ---------- home ----------
 function viewHome() {
   chrome(true, true);
-  const docs = S.docs;
+  const docs = S.docs.filter((d) => !d.superseded);
   const expired = docs.filter((d) => d.state === "expired");
   const soon = docs.filter((d) => d.state === "soon");
   const valid = docs.filter((d) => d.state === "valid" || d.state === "none");
@@ -209,6 +210,8 @@ function viewAll(params) {
   if (params.get("f")) S.filter = params.get("f");
   const present = [...new Set(S.docs.map((d) => d.category || "other"))];
   const filters = [["all", "All", "category"], ["expired", "Expired", "error"], ["soon", "Due soon", "warning"], ["valid", "Current", "check"],
+    ...(S.docs.some((d) => d.superseded) ? [["old", "Previous versions", "history_edu"]] : []),
+    ...(S.docs.some((d) => d.kind === "register") ? [["kind:ticket", "Tickets & licences", "badge"], ["kind:register", "Registers", "fact_check"]] : []),
     ...present.map((id) => [`cat:${id}`, (S.catById[id] || {}).name || id, (S.catById[id] || {}).icon || "description"])];
   render(topbar("Documents") + `
     <label class="search">${icon("search")}<input id="q" type="search" placeholder="Search tickets, issuers, numbers" value="${esc(S.query)}" enterkeyhint="search"></label>
@@ -216,10 +219,11 @@ function viewAll(params) {
     <div id="res"></div>`);
   const draw = () => {
     const q = S.query.trim().toLowerCase();
-    let docs = S.docs;
+    let docs = S.filter === "old" ? S.docs.filter((d) => d.superseded) : S.docs.filter((d) => !d.superseded);
     if (S.filter === "valid") docs = docs.filter((d) => d.state === "valid" || d.state === "none");
+    else if (S.filter.startsWith("kind:")) docs = docs.filter((d) => d.kind === S.filter.slice(5));
     else if (S.filter.startsWith("cat:")) docs = docs.filter((d) => (d.category || "other") === S.filter.slice(4));
-    else if (S.filter !== "all") docs = docs.filter((d) => d.state === S.filter);
+    else if (!["all", "old"].includes(S.filter)) docs = docs.filter((d) => d.state === S.filter);
     if (q) docs = docs.filter((d) => [d.title, d.issuer, d.licence_number, d.category_name, d.holder_name, d.location, d.notes, d.original_name]
       .some((v) => (v || "").toLowerCase().includes(q)));
     $("#res").innerHTML = docs.length ? `<div class="list gap">${sortDocs(docs).map(docItem).join("")}</div>`
@@ -236,38 +240,86 @@ function viewAdd() {
   render(topbar("Add documents", { back: true }) + `
     <div class="drop" id="drop"><div class="big-icon">${icon("upload_file", "xl")}</div>
       <h3>Add a licence or ticket</h3>
-      <div>Photos or PDFs — front &amp; back can be separate files.<br>${S.me.ai_enabled ? `${icon("star_shine", "sm")} AI reads every file and fills in the details.` : "Details are read automatically with OCR."}</div></div>
-    <div class="upload-actions">
+      <div>Photos, PDFs or register spreadsheets (Excel/CSV) — or drop a whole folder here.<br>${S.me.ai_enabled ? `${icon("star_shine", "sm")} AI reads every file and fills in the details.` : "Details are read automatically with OCR."}</div></div>
+    <div class="upload-actions three">
       <label class="btn tonal">${icon("photo_camera")}Take photo<input type="file" accept="image/*" capture="environment" class="hidden" id="cam"></label>
-      <label class="btn tonal">${icon("folder_open")}Choose files<input type="file" accept="application/pdf,image/*,.heic,.heif" multiple class="hidden" id="pick"></label>
+      <label class="btn tonal">${icon("upload_file")}Choose files<input type="file" accept="application/pdf,image/*,.heic,.heif,.xlsx,.xlsm,.csv" multiple class="hidden" id="pick"></label>
+      <label class="btn tonal">${icon("folder_open")}Import folder<input type="file" webkitdirectory directory multiple class="hidden" id="folder"></label>
     </div>
     <div id="queue"></div>`);
   const drop = $("#drop");
   ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
   ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
-  drop.addEventListener("drop", (e) => upload([...e.dataTransfer.files]));
+  drop.addEventListener("drop", async (e) => upload(await filesFromDrop(e.dataTransfer)));
   $("#cam").addEventListener("change", (e) => upload([...e.target.files]));
   $("#pick").addEventListener("change", (e) => upload([...e.target.files]));
+  $("#folder").addEventListener("change", (e) => upload([...e.target.files], true));
 }
 
-async function upload(files) {
-  if (!files.length) return;
+// Walk dropped folders (and sub-folders) to collect every file
+async function filesFromDrop(dt) {
+  const entries = [...(dt.items || [])].map((i) => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  if (!entries.length) return [...dt.files];
+  const out = [];
+  const walk = async (entry) => {
+    if (entry.isFile) { out.push(await new Promise((res, rej) => entry.file(res, rej))); return; }
+    const reader = entry.createReader();
+    for (;;) {
+      const batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+      if (!batch.length) break;
+      for (const child of batch) await walk(child);
+    }
+  };
+  for (const en of entries) await walk(en);
+  return out;
+}
+
+const OK_FILE = /\.(pdf|jpe?g|png|webp|heic|heif|xlsx|xlsm|csv)$/i;
+
+async function upload(all, fromFolder = false) {
+  if (!all.length) return;
+  const maxBytes = (S.me.max_upload_mb || 25) * 1048576;
+  const files = all.filter((f) => !f.name.startsWith(".") && (OK_FILE.test(f.name) || /^(image\/|application\/pdf)/.test(f.type)) && f.size <= maxBytes);
+  const skipped = all.length - files.length;
   const q = $("#queue");
-  q.innerHTML = `<div class="section-title">Uploading</div><div class="list gap">${files.map((f) => `<div class="item"><div class="lead c-grey">${icon("hourglass_top")}</div>
-    <div class="body"><div class="h">${esc(f.name)}</div><div class="s">${(f.size / 1048576).toFixed(1)} MB</div><div class="progress"></div></div></div>`).join("")}</div>`;
-  const fd = new FormData();
-  files.forEach((f) => fd.append("files", f, f.name));
-  try {
-    const res = await api("/api/documents", { method: "POST", body: fd });
-    await loadDocs();
-    const errs = res.filter((r) => r.error);
-    errs.forEach((r) => snack(`${r.name}: ${r.error}`, 5000));
-    const ok = res.filter((r) => r.id);
-    if (ok.some((r) => r.duplicate)) snack("Already uploaded — showing the existing copy");
-    if (ok.length === 1) location.hash = `#/doc/${ok[0].id}`;
-    else if (ok.length) { snack(`${ok.length} files uploaded — reading them now`); location.hash = "#/"; }
+  if (!files.length) { snack(`No PDFs or photos found${skipped ? ` (${skipped} other file${skipped > 1 ? "s" : ""} skipped)` : ""}`, 5000); return; }
+  const many = files.length > 3 || fromFolder;
+  const stats = { added: [], dup: 0, failed: [] };
+  const drawList = () => `<div class="section-title">Uploading</div><div class="list gap">${files.map((f) => `<div class="item"><div class="lead c-grey">${icon("hourglass_top")}</div>
+    <div class="body"><div class="h">${esc(f.webkitRelativePath || f.name)}</div><div class="s">${(f.size / 1048576).toFixed(1)} MB</div><div class="progress"></div></div></div>`).join("")}</div>`;
+  const drawSummary = (done) => `<div class="card tonal-primary"><div class="head">${icon(done >= files.length ? "task_alt" : "folder_open")}<div>
+    <h3>${done >= files.length ? "Import finished" : `Importing ${done} of ${files.length}`}</h3>
+    <p>${stats.added.length} added${stats.dup ? ` · ${stats.dup} already in CertVault` : ""}${stats.failed.length ? ` · ${stats.failed.length} failed` : ""}${skipped ? ` · ${skipped} skipped (not PDF/photo or too big)` : ""}</p></div></div>
+    <div class="progress det"><span id="bar"></span></div>
+    ${stats.failed.length ? `<p>${stats.failed.map((x) => esc(x)).join("<br>")}</p>` : ""}
+    ${done >= files.length && stats.added.length ? `<div class="btn-row end"><a class="btn filled" href="#/">${icon("check")}Done</a></div>` : ""}</div>`;
+  const setBar = (done) => { const b = $("#bar"); if (b) b.style.width = `${Math.round((done / files.length) * 100)}%`; };
+  q.innerHTML = many ? drawSummary(0) : drawList();
+  setBar(0);
+  const BATCH = 5;
+  for (let i = 0; i < files.length; i += BATCH) {
+    const chunk = files.slice(i, i + BATCH);
+    const fd = new FormData();
+    chunk.forEach((f) => fd.append("files", f, f.name));
+    try {
+      const res = await api("/api/documents", { method: "POST", body: fd });
+      res.forEach((r) => { if (r.error) stats.failed.push(`${r.name}: ${r.error}`); else if (r.duplicate) stats.dup++; else stats.added.push(r.id); });
+    } catch (err) {
+      chunk.forEach((f) => stats.failed.push(`${f.name}: ${err.message}`));
+      if (/log in/i.test(err.message)) return;
+    }
+    if (many) { q.innerHTML = drawSummary(Math.min(i + BATCH, files.length)); setBar(Math.min(i + BATCH, files.length)); }
+  }
+  await loadDocs();
+  if (!many) {
+    stats.failed.forEach((m) => snack(m, 5000));
+    if (stats.added.length === 1 && files.length === 1) return void (location.hash = `#/doc/${stats.added[0]}`);
+    if (stats.dup && !stats.added.length) snack("Already uploaded");
+    if (stats.added.length) { snack(`${stats.added.length} files uploaded — reading them now`); location.hash = "#/"; }
     else q.innerHTML = "";
-  } catch (err) { snack(err.message, 5000); q.innerHTML = ""; }
+    return;
+  }
+  snack(`${stats.added.length} added — ${S.me.ai_enabled ? "AI is" : "CertVault is"} reading them now`, 5000);
 }
 
 // ---------- document detail ----------
@@ -277,7 +329,11 @@ async function viewDoc(id) {
   try { d = await api(`/api/documents/${id}`); } catch (e) { return render(topbar("Not found", { back: true }) + `<div class="empty">${icon("error")}<p>${esc(e.message)}</p></div>`); }
   const [cls, label, ic] = stateLabel(d);
   const big = d.status === "processing" ? "…" : d.days_left == null ? "" : Math.abs(d.days_left);
+  const reg = d.kind === "register";
+  const L = reg ? { done: "Last inspected", exp: "Next inspection due", expShort: "inspection due" } : { done: "Completed / issued", exp: "Expires", expShort: "expires" };
   const cdText = d.status === "processing" ? "Reading your document…"
+    : reg && d.state === "expired" ? `days overdue — inspection was due ${fmtDate(d.expiry_date)}`
+    : reg && d.days_left != null ? (d.days_left === 0 ? "Inspection due today!" : `days until next inspection · ${fmtDate(d.expiry_date)}`)
     : d.state === "expired" ? `days since it expired on ${fmtDate(d.expiry_date)}`
     : d.state === "none" ? "This one doesn't expire"
     : d.days_left == null ? "No expiry date found — add one so you get reminders"
@@ -285,7 +341,20 @@ async function viewDoc(id) {
   const kv = (ico, lab, val) => val ? `<div class="item"><div class="lead">${icon(ico)}</div><div class="body"><div class="s">${esc(lab)}</div><div class="h">${esc(val)}</div></div></div>` : "";
   const issuerTypes = { government: "Government", training: "Training provider", company: "Company / site", other: "Other" };
   const rem = d.reminder_days || "default";
-  let html = topbar(d.category_name, { back: true, actions: `<a class="icon-btn" href="#/doc/${d.id}/edit" aria-label="Edit">${icon("edit")}</a>` });
+  const older = (d.history || []).filter((h) => h.id !== d.id);
+  let html = topbar(d.category_name, { back: true, actions: `<a class="icon-btn" href="#/doc/${d.id}/edit" aria-label="Edit">${icon("edit")}</a>
+    <button class="icon-btn" id="more" aria-label="More options" aria-haspopup="menu">${icon("more_vert")}${older.length ? `<span class="dot">${older.length}</span>` : ""}</button>` });
+  html += `<div class="menu hidden" id="menu" role="menu">
+    <button role="menuitem" data-m="versions">${icon("history_edu")}<span>Previous / expired versions</span><span class="count">${older.length}</span></button>
+    <a role="menuitem" href="#/doc/${d.id}/edit">${icon("edit")}<span>Edit details</span></a>
+    <button role="menuitem" data-m="rescan">${icon(S.me.ai_enabled ? "star_shine" : "refresh")}<span>${S.me.ai_enabled ? "Re-read with AI" : "Re-read"}</span></button>
+    <a role="menuitem" href="/api/documents/${d.id}/file?download=1">${icon("download")}<span>Download file</span></a>
+    ${d.versions > 1 || d.version_group === "solo" ? `<button role="menuitem" data-m="solo">${icon("category")}<span>${d.version_group === "solo" ? "Group with same-name copies" : "Not a renewal — keep separate"}</span></button>` : ""}
+    <div class="menu-div"></div>
+    <button role="menuitem" data-m="delete" class="danger">${icon("delete")}<span>Delete</span></button></div>`;
+  if (d.superseded) html += `<div class="card"><div class="head">${icon("history_edu")}<div><h3>Previous version</h3>
+    <p>A newer copy of this ticket is on file, so this one is kept for your records and won't send reminders.</p></div></div>
+    <div class="btn-row end"><a class="btn filled" href="#/doc/${esc(d.current_id)}">Open current</a></div></div>`;
   html += `<div class="hero"><div class="lead c-${esc(d.color)}">${icon(d.icon, "lg")}</div><div><h2>${esc(d.title || "Untitled")}</h2><div class="s">${esc(d.issuer || d.category_name)}</div></div></div>`;
   if (d.status === "processing") html += `<div class="card tonal-primary"><div class="head">${icon(S.me.ai_enabled ? "star_shine" : "hourglass_top")}<div><h3>${S.me.ai_enabled ? "AI is reading this file" : "Reading this file"}</h3><p>This usually takes a few seconds.</p></div></div><div class="progress"></div></div>`;
   else if (d.status === "review") html += `<div class="card tonal-primary"><div class="head">${icon(d.extract_source && d.extract_source.startsWith("ai") ? "star_shine" : "edit")}<div><h3>Check these details</h3>
@@ -299,14 +368,14 @@ async function viewDoc(id) {
     ${kv("apartment", "Issued by", d.issuer ? d.issuer + (d.issuer_type ? ` · ${issuerTypes[d.issuer_type] || d.issuer_type}` : "") : null)}
     ${kv("person", "Holder", d.holder_name)}
     ${kv("tag", "Number", d.licence_number)}
-    ${kv("event_available", "Completed / issued", d.completion_date ? fmtDate(d.completion_date) : null)}
-    ${kv("event", "Expires", d.expiry_date ? fmtDate(d.expiry_date) + (d.expiry_estimated ? " (estimated)" : "") : d.no_expiry ? "Doesn't expire" : "Not set")}
+    ${kv("event_available", L.done, d.completion_date ? fmtDate(d.completion_date) : null)}
+    ${kv("event", L.exp, d.expiry_date ? fmtDate(d.expiry_date) + (d.expiry_estimated ? " (estimated)" : "") : d.no_expiry ? "Doesn't expire" : "Not set")}
     ${kv("location_on", "Location", d.location)}
     ${kv("description", "Notes", d.notes)}
     ${kv("notifications", "Reminders", rem === "default" ? "Default schedule" : rem.split(",").map((x) => x === "0" ? "on the day" : `${x}d`).join(", ") + " before")}
   </div>
   <div class="btn-row">
-    <a class="btn tonal" href="/api/documents/${d.id}/file" target="_blank" rel="noopener">${icon("open_in_new")}Open</a>
+    ${["xlsx", "csv"].includes(d.file_ext) ? "" : `<a class="btn tonal" href="/api/documents/${d.id}/file" target="_blank" rel="noopener">${icon("open_in_new")}Open</a>`}
     <a class="btn outlined" href="/api/documents/${d.id}/file?download=1">${icon("download")}Download</a>
     <button class="btn outlined" id="rescan">${icon(S.me.ai_enabled ? "star_shine" : "refresh")}${S.me.ai_enabled ? "Re-read with AI" : "Re-read"}</button>
     <button class="btn text" id="del">${icon("delete")}Delete</button>
@@ -315,12 +384,39 @@ async function viewDoc(id) {
   ${d.ocr_text ? `<details><summary>Show scanned text</summary><pre class="ocr">${esc(d.ocr_text)}</pre></details>` : ""}`;
   render(html);
   $("#confirm") && $("#confirm").addEventListener("click", async () => { await api(`/api/documents/${d.id}`, { method: "PATCH", body: {} }); await loadDocs(); snack("Saved"); viewDoc(id); });
+  const menu = $("#menu");
+  const closeMenu = () => menu.classList.add("hidden");
+  $("#more").addEventListener("click", (e) => { e.stopPropagation(); menu.classList.toggle("hidden"); });
+  $$("[data-m]", menu).forEach((b) => b.addEventListener("click", async (e) => {
+    e.stopPropagation(); closeMenu();
+    const m = b.dataset.m;
+    if (m === "versions") return showVersions(d);
+    if (m === "rescan") return $("#rescan").click();
+    if (m === "delete") return $("#del").click();
+    if (m === "solo") {
+      await api(`/api/documents/${d.id}`, { method: "PATCH", body: { version_group: d.version_group === "solo" ? null : "solo" } });
+      await loadDocs(); snack(d.version_group === "solo" ? "Grouped with its other versions" : "Kept as a separate ticket"); viewDoc(id);
+    }
+  }));
   $("#rescan").addEventListener("click", async () => { await api(`/api/documents/${d.id}/rescan`, { method: "POST" }); await loadDocs(); viewDoc(id); });
   $("#del").addEventListener("click", async () => {
     if (!(await confirmDlg("Delete document?", `“${d.title}” and its file will be permanently removed.`))) return;
     await api(`/api/documents/${d.id}`, { method: "DELETE" }); await loadDocs(); snack("Deleted"); location.hash = "#/all";
   });
   if (d.status === "processing") { clearTimeout(S.docPoll); S.docPoll = setTimeout(() => { if (location.hash === `#/doc/${id}`) viewDoc(id); }, 2500); }
+}
+
+function showVersions(d) {
+  const hist = d.history || [d];
+  const row = (h) => `<a class="item" href="#/doc/${h.id}" data-close>${h.id === d.id ? `<div class="lead c-${esc(h.color)}">${icon("check")}</div>` : `<div class="lead c-grey">${icon("history_edu")}</div>`}
+    <div class="body"><div class="h">${esc(h.title || "Untitled")}${h.superseded ? "" : " · current"}</div>
+    <div class="s">${h.completion_date ? (h.kind === "register" ? "Inspected " : "Done ") + fmtDate(h.completion_date) : ""}${h.expiry_date ? ` → ${fmtDate(h.expiry_date)}` : ""}${h.issuer ? ` · ${esc(h.issuer)}` : ""}</div></div>
+    <div class="trail">${chip(h)}</div></a>`;
+  const dl = dialog(`<h2>All versions</h2>
+    <p>${hist.length > 1 ? `${hist.length} copies of this ticket on file — newest first. Only the newest one sends reminders.` : "There are no older or expired copies of this ticket yet. Upload a renewed certificate and they'll be grouped here automatically."}</p>
+    <div class="list gap">${hist.map(row).join("")}</div><div class="spacer"></div>
+    <div class="btn-row"><a class="btn tonal" href="#/add" data-close>${icon("add")}Add renewal</a><button class="btn text" data-close>Close</button></div>`);
+  $$("a[data-close]", dl).forEach((a) => a.addEventListener("click", () => dl.close()));
 }
 
 async function viewEdit(id) {
@@ -340,8 +436,8 @@ async function viewEdit(id) {
         <div class="field"><label>Licence / cert number</label><input name="licence_number" value="${esc(d.licence_number)}" autocomplete="off"></div>
       </div>
       <div class="row2">
-        <div class="field"><label>Completed / issued</label><input type="date" name="completion_date" value="${esc(d.completion_date)}"></div>
-        <div class="field ${d.expiry_estimated ? "warn" : ""}"><label>Expiry date</label><input type="date" name="expiry_date" id="exp" value="${esc(d.expiry_date)}">${d.expiry_estimated ? '<div class="hint">Estimated — check your card</div>' : ""}</div>
+        <div class="field"><label id="l-done">${(S.catById[d.category] || {}).kind === "register" ? "Last inspected" : "Completed / issued"}</label><input type="date" name="completion_date" value="${esc(d.completion_date)}"></div>
+        <div class="field ${d.expiry_estimated ? "warn" : ""}"><label id="l-exp">${(S.catById[d.category] || {}).kind === "register" ? "Next inspection due" : "Expiry date"}</label><input type="date" name="expiry_date" id="exp" value="${esc(d.expiry_date)}">${d.expiry_estimated ? '<div class="hint">Estimated — check your card</div>' : ""}</div>
       </div>
       <div class="switch-row"><div class="body">Doesn't expire<div class="s">No reminders for this one</div></div><input type="checkbox" class="switch" name="no_expiry" ${d.no_expiry ? "checked" : ""}></div>
       <div class="field"><label>Location / venue</label><input name="location" value="${esc(d.location)}"></div>
@@ -349,6 +445,11 @@ async function viewEdit(id) {
       <div class="field"><label>Reminder days for this document</label><input name="reminder_days" value="${esc(d.reminder_days)}" placeholder="Default (from Settings)" inputmode="numeric"><div class="hint">Comma separated, e.g. 60,30,14,7,0 — leave blank to use your default</div></div>
       <div class="btn-row end"><button type="button" class="btn text" data-back>Cancel</button><button class="btn filled">${icon("check")}Save</button></div>
     </form>`);
+  $("[name=category]").addEventListener("change", (e) => {
+    const r = (S.catById[e.target.value] || {}).kind === "register";
+    $("#l-done").textContent = r ? "Last inspected" : "Completed / issued";
+    $("#l-exp").textContent = r ? "Next inspection due" : "Expiry date";
+  });
   $("#f").addEventListener("submit", async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
@@ -356,6 +457,40 @@ async function viewEdit(id) {
     if (body.expiry_date !== (d.expiry_date || "")) body.expiry_estimated = false;
     try { await api(`/api/documents/${id}`, { method: "PATCH", body }); await loadDocs(); snack("Saved"); history.back(); } catch (err) { snack(err.message); }
   });
+}
+
+// ---------- master list (text only, every field) ----------
+async function viewList() {
+  chrome(true, false);
+  const m = await api("/api/master");
+  const cols = m.columns.filter((c) => c !== "ID");
+  const dateCols = new Set(["Completed / last inspected", "Expiry / next due"]);
+  const fmtCell = (c, v) => {
+    if (v == null || v === "") return "";
+    if (dateCols.has(c)) return fmtDate(String(v).slice(0, 10));
+    if (c === "Uploaded" || c === "Last updated") return fmtDate(String(v).slice(0, 10));
+    return String(v);
+  };
+  const exp = m.rows.filter((r) => r._state === "expired").length, soon = m.rows.filter((r) => r._state === "soon").length;
+  render(topbar("Master list", { actions: `<button class="icon-btn" id="print" aria-label="Print">${icon("print")}</button>` }) + `
+    <div class="subtitle">${m.rows.length} documents · ${exp} expired · ${soon} due within 30 days</div>
+    <div class="btn-row noprint">
+      <a class="btn filled" href="/api/master.xlsx">${icon("download")}Excel</a>
+      <a class="btn outlined" href="/api/master.csv">${icon("download")}CSV</a>
+    </div>
+    <label class="search noprint">${icon("search")}<input id="mq" type="search" placeholder="Filter the list"></label>
+    <div class="table-wrap"><table class="master" id="mt">
+      <thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+      <tbody>${m.rows.map((r) => `<tr class="st-${esc(r._state)} ${r.Version === "Previous" ? "old" : ""}" data-id="${esc(r.ID)}">${cols.map((c) => `<td>${esc(fmtCell(c, r[c]))}</td>`).join("")}</tr>`).join("")}</tbody>
+    </table></div>
+    ${m.rows.length ? "" : `<div class="empty">${icon("list_alt")}<p>Nothing uploaded yet.</p></div>`}
+    <div class="meta">An always-up-to-date copy is saved on the NAS in the <b>exports</b> folder of the CertVault dataset.</div>`);
+  $("#print").addEventListener("click", () => window.print());
+  $("#mq").addEventListener("input", (e) => {
+    const q = e.target.value.toLowerCase();
+    $$("#mt tbody tr").forEach((tr) => tr.classList.toggle("hidden", !!q && !tr.textContent.toLowerCase().includes(q)));
+  });
+  $$("#mt tbody tr").forEach((tr) => tr.addEventListener("click", () => (location.hash = `#/doc/${tr.dataset.id}`)));
 }
 
 // ---------- settings ----------
@@ -528,6 +663,7 @@ async function route() {
     if (parts[0] === "doc" && parts[2] === "edit") return await viewEdit(parts[1]);
     if (parts[0] === "doc") return await viewDoc(parts[1]);
     if (parts[0] === "settings") return await viewSettings();
+    if (parts[0] === "list") return await viewList();
     if (parts[0] === "login" || parts[0] === "setup") { location.hash = "#/"; return; }
     viewHome();
   } catch (e) { snack(e.message); }
@@ -550,6 +686,7 @@ async function boot() {
 window.addEventListener("hashchange", route);
 window.addEventListener("scroll", () => { const t = $(".topbar"); t && t.classList.toggle("scrolled", window.scrollY > 4); }, { passive: true });
 $("#fab").addEventListener("click", () => (location.hash = "#/add"));
+document.addEventListener("click", () => { const m = $("#menu"); if (m) m.classList.add("hidden"); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden && S.me) loadDocs().then(() => { const h = location.hash; if (h === "#/" || h === "" || h.startsWith("#/all")) route(); }).catch(() => {}); });
 if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost")) navigator.serviceWorker.register("/sw.js").catch(() => {});
 boot().catch((e) => { app.innerHTML = `<div class="empty">${icon("error")}<p>Can't reach CertVault: ${esc(e.message)}</p></div>`; });

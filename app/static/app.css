@@ -399,3 +399,51 @@ dialog .btn-row { margin: 0; justify-content: flex-end; }
 code { font-family: ui-monospace, monospace; font-size: 12px; background: var(--sc-highest); padding: 1px 5px; border-radius: 4px; }
 .nav-item .badge { color: var(--surface) !important; }
 .card .chips { flex-wrap: wrap; padding: 4px 0 12px; overflow: visible; }
+
+.upload-actions.three { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.upload-actions.three .btn { padding: 0 8px; white-space: normal; text-align: center; }
+.progress.det::after { display: none; }
+.progress.det span { display: block; height: 100%; width: 0; background: var(--primary); border-radius: 2px; transition: width .3s var(--ease); }
+.card .progress { margin: 12px 0 4px; }
+
+/* master list */
+.table-wrap { margin: 0 16px; overflow-x: auto; border-radius: var(--r-lg); border: 1px solid var(--outline-v); -webkit-overflow-scrolling: touch; }
+table.master { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+table.master th, table.master td { padding: 10px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--outline-v); white-space: nowrap; }
+table.master td:nth-child(16) { white-space: normal; min-width: 260px; }
+table.master th { background: var(--sc-high); color: var(--on-surface-v); font-weight: 500; position: sticky; top: 0; z-index: 1; }
+table.master th:nth-child(4), table.master td:nth-child(4) { position: sticky; left: 0; background: var(--surface); z-index: 1; font-weight: 500;
+  max-width: 200px; overflow: hidden; text-overflow: ellipsis; box-shadow: 1px 0 0 var(--outline-v); }
+table.master th:nth-child(4) { background: var(--sc-high); z-index: 2; }
+table.master tbody tr { cursor: pointer; }
+table.master tbody tr:hover td { background: var(--sc-low); }
+table.master tr td:first-child { font-weight: 500; }
+tr.st-expired td:first-child { color: var(--bad); } tr.st-soon td:first-child { color: var(--warn); } tr.st-valid td:first-child { color: var(--ok); }
+@media print {
+  .navbar, .fab, .noprint, .topbar .icon-btn, #snack, .meta { display: none !important; }
+  html, body { background: #fff; color: #000; }
+  #app { max-width: none; padding: 0; }
+  .table-wrap { overflow: visible; border: 0; margin: 0; }
+  table.master { font-size: 9px; }
+  table.master th, table.master td { white-space: normal; padding: 4px; position: static !important; box-shadow: none !important; background: #fff !important; color: #000 !important; }
+  @page { size: A4 landscape; margin: 10mm; }
+}
+
+/* overflow menu (M3) */
+.icon-btn .dot { position: absolute; top: 6px; right: 6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--primary); color: var(--on-primary); font-size: 10px; line-height: 16px; text-align: center; font-weight: 600; }
+.menu { position: fixed; z-index: 30; top: calc(60px + env(safe-area-inset-top)); right: max(8px, calc(50vw - 380px + 8px)); min-width: 248px;
+  background: var(--sc); border-radius: var(--r-xs); padding: 8px 0; box-shadow: 0 2px 6px rgba(0,0,0,.2), 0 6px 20px rgba(0,0,0,.14);
+  animation: fadein .15s var(--ease); }
+.menu [role=menuitem] { display: flex; align-items: center; gap: 12px; width: 100%; height: 48px; padding: 0 16px; border: 0;
+  background: transparent; color: var(--on-surface); font: 14px var(--font); text-decoration: none; cursor: pointer; text-align: left; }
+.menu [role=menuitem] .icon { color: var(--on-surface-v); }
+.menu [role=menuitem] span:first-of-type { flex: 1; }
+.menu [role=menuitem]:hover { background: color-mix(in srgb, var(--on-surface) 8%, transparent); }
+.menu [role=menuitem].danger, .menu [role=menuitem].danger .icon { color: var(--bad); }
+.menu .count { color: var(--on-surface-v); font-size: 12px; }
+.menu-div { height: 1px; background: var(--outline-v); margin: 8px 0; }
+table.master tr.old td { opacity: .55; }
+dialog .item .h, dialog .item .s { white-space: normal; }
+dialog .item { padding: 12px; gap: 12px; }
+dialog .item .lead { width: 40px; height: 40px; }

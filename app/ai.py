@@ -20,7 +20,7 @@ from PIL import Image
 
 from . import db
 from .categories import CATEGORIES, CATEGORY_BY_ID
-from .extract import page_images
+from .extract import TEXT_KINDS, page_images
 
 log = logging.getLogger("certvault.ai")
 
@@ -49,7 +49,7 @@ def enabled() -> bool:
 
 def build_prompt(ocr_text: str) -> str:
     cats = "\n".join(
-        f'  - "{c["id"]}": {c["name"]}'
+        f'  - "{c["id"]}": {c["name"]}' + (" [REGISTER]" if c["kind"] == "register" else "")
         + (f' (typically valid {c["validity_years"]} yr)' if c["validity_years"] else "")
         for c in CATEGORIES)
     return f"""You are reading a scanned/photographed Australian (usually Western Australian) licence, ticket,
@@ -79,13 +79,18 @@ Rules:
 - Never use a date of birth as completion or expiry.
 - If only a month/year expiry is printed, use the last day of that month.
 - If there is no printed expiry but the category has a typical validity, set expiry_date = completion_date + that validity and expiry_estimated = true.
+- REGISTERS (equipment / inspection registers such as a rigging gear register, harness register, test & tag register,
+  plant register): use a [REGISTER] category. completion_date = the most recent inspection date, expiry_date = the
+  EARLIEST upcoming "next inspection / retest / due" date of any item in it, issuer = who keeps or inspects it,
+  title e.g. "Rigging Gear Register – CME", notes = a one-line summary (number of items, current colour code,
+  any items overdue or tagged out). In WA, rigging gear is usually inspected quarterly (colour code changes each quarter).
 
 Category ids:
 {cats}
 
-OCR text:
+Document text (OCR or spreadsheet contents):
 \"\"\"
-{(ocr_text or '')[:6000]}
+{(ocr_text or '')[:20000]}
 \"\"\""""
 
 
@@ -142,7 +147,9 @@ def clean(result: dict) -> dict:
 
 def _anthropic(path: Path, ext: str, prompt: str, s: dict) -> dict:
     content = []
-    if ext == "pdf" and path.stat().st_size < 20 * 1024 * 1024:
+    if ext in TEXT_KINDS:
+        pass  # spreadsheet: the text in the prompt is the whole document
+    elif ext == "pdf" and path.stat().st_size < 20 * 1024 * 1024:
         content.append({"type": "document", "source": {
             "type": "base64", "media_type": "application/pdf",
             "data": base64.b64encode(path.read_bytes()).decode()}})
@@ -172,7 +179,7 @@ def _ollama(path: Path, ext: str, prompt: str, s: dict) -> dict:
         s["ollama_url"].rstrip("/") + "/api/chat",
         json={"model": s["ollama_model"], "stream": False, "format": "json",
               "options": {"temperature": 0},
-              "messages": [{"role": "user", "content": prompt, "images": imgs}]},
+              "messages": [{"role": "user", "content": prompt, **({"images": imgs} if imgs else {})}]},
         timeout=300,
     )
     if r.status_code >= 400:

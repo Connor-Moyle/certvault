@@ -11,6 +11,8 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from . import config, db, notify
+from .categories import is_register
+from . import versions
 
 log = logging.getLogger("certvault.scheduler")
 
@@ -37,6 +39,15 @@ def fmt(d: date) -> str:
 
 def message_for(doc, days_left: int, exp: date) -> tuple[str, str, bool]:
     name = doc["title"] or "A document"
+    if is_register(doc["category"]):
+        if days_left > 1:
+            return (f"{name}: inspection due in {days_left} days",
+                    f"Next inspection for {name} is due {fmt(exp)}. Book it in / re-tag the gear.", days_left <= 7)
+        if days_left >= 0:
+            return (f"{name}: inspection due {'TODAY' if days_left == 0 else 'tomorrow'}",
+                    f"Next inspection for {name} is due {fmt(exp)}.", True)
+        return (f"{name}: inspection OVERDUE", f"{name} inspection was due {fmt(exp)} ({-days_left} days ago). "
+                "Gear shouldn't be used until it's inspected.", True)
     if days_left > 1:
         return (f"{name} expires in {days_left} days",
                 f"{name} expires on {fmt(exp)}. Time to book the renewal.", days_left <= 7)
@@ -56,7 +67,10 @@ def check_user(user_id: int, today: date | None = None) -> int:
     sent = 0
     docs = db.q("SELECT * FROM documents WHERE user_id=? AND expiry_date IS NOT NULL "
                 "AND status IN ('ok','review')", (user_id,))
+    old = versions.superseded_ids(db.q("SELECT * FROM documents WHERE user_id=?", (user_id,)))
     for d in docs:
+        if d["id"] in old:
+            continue  # replaced by a newer copy of the same ticket — no reminders
         try:
             exp = date.fromisoformat(d["expiry_date"])
         except ValueError:

@@ -10,7 +10,8 @@ warning error schedule event location_on badge person tag calendar_month visibil
 pending task_alt hourglass_top key group mail send smart_toy palette dark_mode verified apartment more_vert
 history_edu directions_car license construction medical_services ecg_heart stairs_2 emergency sensor_door air
 forklift cell_tower traffic electric_bolt local_police family_restroom id_card how_to_reg school anchor
-notifications_active shield_lock event_busy event_available photo_camera category""".split()
+notifications_active shield_lock event_busy event_available photo_camera category
+fact_check fact_check-fill inventory_2 table_view list_alt list_alt-fill checklist print electrical_services precision_manufacturing""".split()
 
 src = Path(sys.argv[1])
 out = ['<svg xmlns="http://www.w3.org/2000/svg">']

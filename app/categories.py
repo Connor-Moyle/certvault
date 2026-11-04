@@ -70,11 +70,38 @@ CATEGORIES = [
      "keywords": ["statement of attainment", "certificate iii", "certificate iv", "certificate ii",
                   "nationally recognised training", "unit of competency", "has attained", "certificate of completion"],
      "codes": [], "validity_years": None},
+    # ---- registers (equipment / inspection registers) ----
+    {"id": "rigging_register", "name": "Rigging Gear Register", "icon": "fact_check", "color": "orange", "kind": "register",
+     "keywords": ["rigging register", "rigging gear register", "lifting equipment register", "lifting gear register",
+                  "gear register", "sling", "shackle", "chain block", "lever hoist", "wire rope", "wll", "colour code",
+                  "color code", "inspection tag"],
+     "codes": [], "validity_years": 0.25},
+    {"id": "height_register", "name": "Height Safety Gear Register", "icon": "checklist", "color": "teal", "kind": "register",
+     "keywords": ["harness register", "height safety register", "height safety equipment", "harness inspection",
+                  "lanyard", "fall arrest device", "self retracting", "srl", "anchor point inspection"],
+     "codes": [], "validity_years": 0.5},
+    {"id": "test_tag_register", "name": "Test & Tag Register", "icon": "electrical_services", "color": "amber", "kind": "register",
+     "keywords": ["test and tag", "test & tag", "as/nzs 3760", "as/nzs3760", "rcd test", "portable appliance", "pat test"],
+     "codes": [], "validity_years": 0.25},
+    {"id": "plant_register", "name": "Plant / Equipment Register", "icon": "precision_manufacturing", "color": "purple", "kind": "register",
+     "keywords": ["plant register", "equipment register", "plant risk", "service due", "pre-start", "prestart",
+                  "maintenance register", "tool register", "asset register"],
+     "codes": [], "validity_years": 1},
+    {"id": "other_register", "name": "Other Register", "icon": "list_alt", "color": "grey", "kind": "register",
+     "keywords": ["register", "inspection log", "inspection record"],
+     "codes": [], "validity_years": None},
     {"id": "other", "name": "Other", "icon": "description", "color": "grey",
      "keywords": [], "codes": [], "validity_years": None},
 ]
 
+for _c in CATEGORIES:
+    _c.setdefault("kind", "ticket")
+
 CATEGORY_BY_ID = {c["id"]: c for c in CATEGORIES}
+
+
+def is_register(cat_id: str | None) -> bool:
+    return CATEGORY_BY_ID.get(cat_id or "other", CATEGORY_BY_ID["other"])["kind"] == "register"
 
 # Well-known unit codes -> readable titles (used to build nice titles)
 UNIT_TITLES = {

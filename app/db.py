@@ -110,6 +110,10 @@ def init() -> None:
     config.ensure_dirs()
     conn = connect()
     conn.executescript(SCHEMA)
+    # migrations
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
+    if "version_group" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN version_group TEXT")
     conn.commit()
 
 

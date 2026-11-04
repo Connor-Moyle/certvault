@@ -16,14 +16,14 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import ai, config, db, extract, notify, scheduler, security
-from .categories import CATEGORIES, CATEGORY_BY_ID
+from . import ai, config, db, export, extract, notify, scheduler, security, versions
+from .categories import CATEGORIES, CATEGORY_BY_ID, is_register
 
 logging.basicConfig(level=config.LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("certvault")
 
 STATIC = Path(__file__).parent / "static"
-VERSION = "1.0.0"
+VERSION = "1.2.0"
 
 app = FastAPI(title="CertVault", docs_url=None, redoc_url=None, openapi_url=None)
 worker = ThreadPoolExecutor(max_workers=1)  # one document at a time — gentle on the NAS
@@ -47,6 +47,8 @@ def startup():
     # documents stuck in 'processing' after a restart -> re-queue
     for r in db.q("SELECT id FROM documents WHERE status='processing'"):
         worker.submit(process_document, r["id"], "full")
+    for u in db.q("SELECT id FROM users"):
+        export.write_master(u["id"])
     scheduler.start()
 
 
@@ -88,6 +90,7 @@ def doc_state(row) -> dict:
     d["category_name"] = cat["name"]
     d["icon"] = cat["icon"]
     d["color"] = cat["color"]
+    d["kind"] = cat["kind"]
     return d
 
 
@@ -153,6 +156,7 @@ def process_document(doc_id: str, mode: str = "full"):
         vals += [source, error, new_status, doc_id]
         db.run(f"UPDATE documents SET {', '.join(sets)} WHERE id=?", vals)
         log.info("Processed %s via %s", doc_id, source)
+        export.write_master(row["user_id"])
     except Exception as e:
         log.exception("Processing failed for %s", doc_id)
         db.run("UPDATE documents SET status='review', extract_error=?, updated_at=datetime('now') WHERE id=?",
@@ -236,7 +240,8 @@ def logout(request: Request, user=Depends(security.require_user)):
 @app.get("/api/me")
 def me(user=Depends(security.require_user)):
     return {"id": user["id"], "username": user["username"], "is_admin": bool(user["is_admin"]),
-            "csrf": user["csrf"], "totp_enabled": bool(user["totp_secret"]), "ai_enabled": ai.enabled()}
+            "csrf": user["csrf"], "totp_enabled": bool(user["totp_secret"]), "ai_enabled": ai.enabled(),
+            "max_upload_mb": config.MAX_UPLOAD_MB}
 
 
 class PasswordIn(BaseModel):
@@ -299,20 +304,20 @@ def logout_others(request: Request, user=Depends(security.require_user)):
 
 @app.get("/api/categories")
 def categories(user=Depends(security.require_user)):
-    return [{k: c[k] for k in ("id", "name", "icon", "color", "validity_years")} for c in CATEGORIES]
+    return [{k: c[k] for k in ("id", "name", "icon", "color", "validity_years", "kind")} for c in CATEGORIES]
 
 
 @app.get("/api/documents")
 def list_documents(user=Depends(security.require_user)):
     rows = db.q("SELECT * FROM documents WHERE user_id=? ORDER BY "
                 "CASE WHEN expiry_date IS NULL THEN 1 ELSE 0 END, expiry_date, created_at DESC", (user["id"],))
-    return [doc_state(r) for r in rows]
+    return versions.annotate([doc_state(r) for r in rows])
 
 
 @app.post("/api/documents")
 async def upload(files: list[UploadFile] = File(...), user=Depends(security.require_user)):
     if len(files) > 30:
-        raise HTTPException(400, "Max 30 files at a time")
+        raise HTTPException(400, "Max 30 files per request")
     limit = config.MAX_UPLOAD_MB * 1024 * 1024
     results = []
     for f in files:
@@ -321,9 +326,9 @@ async def upload(files: list[UploadFile] = File(...), user=Depends(security.requ
             data += chunk
             if len(data) > limit:
                 raise HTTPException(413, f"{f.filename} is larger than {config.MAX_UPLOAD_MB} MB")
-        kind = extract.sniff(bytes(data[:16]))
+        kind = extract.sniff(bytes(data[:16]), bytes(data), f.filename or "")
         if not kind:
-            results.append({"name": f.filename, "error": "Unsupported file — use PDF, JPG, PNG, WEBP or HEIC"})
+            results.append({"name": f.filename, "error": "Unsupported file — use PDF, photo (JPG/PNG/WEBP/HEIC) or a register spreadsheet (XLSX/CSV)"})
             continue
         try:
             blob, ext, mime = extract.normalise_upload(bytes(data), kind[0])
@@ -350,8 +355,12 @@ async def upload(files: list[UploadFile] = File(...), user=Depends(security.requ
 @app.get("/api/documents/{doc_id}")
 def get_document(doc_id: str, user=Depends(security.require_user)):
     row = get_doc(doc_id, user)
-    d = doc_state(row)
+    alld = versions.annotate([doc_state(r) for r in db.q("SELECT * FROM documents WHERE user_id=?", (user["id"],))])
+    d = next(x for x in alld if x["id"] == doc_id)
     d["ocr_text"] = row["ocr_text"]
+    d["history"] = [{k: x[k] for k in ("id", "title", "issuer", "completion_date", "expiry_date", "state", "days_left",
+                                        "superseded", "status", "icon", "color", "kind")}
+                    for x in versions.group_of(alld, doc_id)]
     return d
 
 
@@ -369,6 +378,7 @@ class DocIn(BaseModel):
     location: str | None = Field(None, max_length=300)
     notes: str | None = Field(None, max_length=4000)
     reminder_days: str | None = Field(None, max_length=100)
+    version_group: str | None = Field(None, max_length=20)
 
 
 @app.patch("/api/documents/{doc_id}")
@@ -389,6 +399,8 @@ def update_document(doc_id: str, body: DocIn, user=Depends(security.require_user
         data["reminder_days"] = ",".join(str(x) for x in scheduler.parse_days(data["reminder_days"]))
     if data.get("no_expiry"):
         data["expiry_date"] = None
+    if "version_group" in data and data["version_group"] not in (None, "", "solo"):
+        raise HTTPException(400, "version_group must be 'solo' or empty")
     for k, v in list(data.items()):
         if isinstance(v, bool):
             data[k] = int(v)
@@ -399,6 +411,7 @@ def update_document(doc_id: str, body: DocIn, user=Depends(security.require_user
         return doc_state(get_doc(doc_id, user))
     sets = ", ".join(f"{k}=?" for k in data) + ", status='ok', updated_at=datetime('now')"
     db.run(f"UPDATE documents SET {sets} WHERE id=? AND user_id=?", (*data.values(), doc_id, user["id"]))
+    export.write_master(user["id"])
     return doc_state(get_doc(doc_id, user))
 
 
@@ -408,6 +421,7 @@ def delete_document(doc_id: str, user=Depends(security.require_user)):
     file_path(row).unlink(missing_ok=True)
     thumb_path(doc_id).unlink(missing_ok=True)
     db.run("DELETE FROM documents WHERE id=?", (doc_id,))
+    export.write_master(user["id"])
     return {"ok": True}
 
 
@@ -431,8 +445,9 @@ def rescan_all(user=Depends(security.require_user)):
 def get_file(doc_id: str, download: int = 0, user=Depends(security.require_user)):
     row = get_doc(doc_id, user)
     name = (row["title"] or "document").replace('"', "").replace("/", "-")[:80] + "." + row["file_ext"]
+    inline = not download and row["file_ext"] not in extract.TEXT_KINDS  # spreadsheets always download
     return FileResponse(file_path(row), media_type=row["mime"], filename=name,
-                        content_disposition_type="attachment" if download else "inline",
+                        content_disposition_type="inline" if inline else "attachment",
                         headers={"Cache-Control": "private, no-store"})
 
 
@@ -443,6 +458,32 @@ def get_thumb(doc_id: str, user=Depends(security.require_user)):
     if not row["has_thumb"] or not p.exists():
         raise HTTPException(404)
     return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ---- master list ----------------------------------------------------------------------
+
+@app.get("/api/master")
+def master(user=Depends(security.require_user)):
+    rows = export.rows_for(user["id"])
+    for r in rows:
+        for k, v in r.items():
+            if hasattr(v, "isoformat"):
+                r[k] = v.isoformat()
+    return {"columns": [c for c, _ in export.COLUMNS], "rows": rows}
+
+
+@app.get("/api/master.xlsx")
+def master_xlsx(user=Depends(security.require_user)):
+    fn = f"{export.safe_name(user['username'])} - CertVault Master List {date.today():%Y-%m-%d}.xlsx"
+    return Response(export.xlsx_bytes(user["id"], user["username"]), media_type=extract.XLSX_MIME,
+                    headers={"Content-Disposition": f'attachment; filename="{fn}"', "Cache-Control": "no-store"})
+
+
+@app.get("/api/master.csv")
+def master_csv(user=Depends(security.require_user)):
+    fn = f"{export.safe_name(user['username'])} - CertVault Master List {date.today():%Y-%m-%d}.csv"
+    return Response(export.csv_text(user["id"]), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{fn}"', "Cache-Control": "no-store"})
 
 
 # ---- settings -------------------------------------------------------------------------

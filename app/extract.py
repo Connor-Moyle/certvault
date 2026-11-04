@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from .categories import CATEGORIES, CATEGORY_BY_ID, ISSUERS, UNIT_TITLES
+from .categories import CATEGORIES, CATEGORY_BY_ID, ISSUERS, UNIT_TITLES, is_register
 
 log = logging.getLogger("certvault.extract")
 
@@ -26,8 +26,31 @@ Image.MAX_IMAGE_PIXELS = 80_000_000  # guard against decompression bombs
 
 # ---- file type detection ----------------------------------------------------
 
-def sniff(head: bytes) -> tuple[str, str] | None:
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+TEXT_KINDS = ("xlsx", "csv")  # spreadsheet registers: no image, text only
+
+
+def sniff(head: bytes, data: bytes = b"", filename: str = "") -> tuple[str, str] | None:
     """Return (ext, mime) from magic bytes, or None if not an allowed type."""
+    name = (filename or "").lower()
+    if head.startswith(b"PK\x03\x04") and name.endswith((".xlsx", ".xlsm")):
+        import zipfile
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                if "xl/workbook.xml" in z.namelist():
+                    return "xlsx", XLSX_MIME
+        except zipfile.BadZipFile:
+            return None
+        return None
+    if name.endswith(".csv") and data and b"\x00" not in data[:65536]:
+        try:
+            data[:65536].decode("utf-8-sig")
+        except UnicodeDecodeError:
+            try:
+                data[:65536].decode("cp1252")
+            except UnicodeDecodeError:
+                return None
+        return "csv", "text/csv"
     if head.startswith(b"%PDF-"):
         return "pdf", "application/pdf"
     if head.startswith(b"\xff\xd8\xff"):
@@ -45,6 +68,10 @@ def normalise_upload(data: bytes, ext: str) -> tuple[bytes, str, str]:
     """Convert HEIC to JPEG (browsers can't show HEIC) and strip EXIF/GPS from images."""
     if ext == "pdf":
         return data, "pdf", "application/pdf"
+    if ext == "xlsx":
+        return data, "xlsx", XLSX_MIME
+    if ext == "csv":
+        return data, "csv", "text/csv"
     img = Image.open(io.BytesIO(data))
     img = ImageOps.exif_transpose(img)
     if ext in ("heic", "webp") or img.mode not in ("RGB", "L"):
@@ -87,7 +114,51 @@ def pdf_text(path: Path) -> str:
         return ""
 
 
+def spreadsheet_text(path: Path, ext: str, max_chars: int = 40000) -> str:
+    """Flatten a register spreadsheet to text: one line per row, cells separated by ' | '."""
+    from datetime import datetime as _dt, date as _d
+    lines = []
+    if ext == "csv":
+        import csv
+        raw = path.read_bytes()
+        try:
+            txt = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            txt = raw.decode("cp1252", "replace")
+        for row in csv.reader(io.StringIO(txt)):
+            if any(c.strip() for c in row):
+                lines.append(" | ".join(c.strip() for c in row))
+            if sum(map(len, lines)) > max_chars:
+                break
+        return "\n".join(lines)[:max_chars]
+    from openpyxl import load_workbook
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        for ws in wb.worksheets:
+            lines.append(f"## Sheet: {ws.title}")
+            for row in ws.iter_rows(values_only=True):
+                cells = []
+                for v in row:
+                    if v is None:
+                        cells.append("")
+                    elif isinstance(v, (_dt, _d)):
+                        cells.append(v.strftime("%d/%m/%Y"))
+                    else:
+                        cells.append(str(v).strip())
+                while cells and not cells[-1]:
+                    cells.pop()
+                if any(cells):
+                    lines.append(" | ".join(cells))
+                if sum(map(len, lines)) > max_chars:
+                    break
+    finally:
+        wb.close()
+    return "\n".join(lines)[:max_chars]
+
+
 def page_images(path: Path, ext: str) -> list[Image.Image]:
+    if ext in TEXT_KINDS:
+        return []
     if ext == "pdf":
         return pdf_pages_to_images(path)
     im = Image.open(path)
@@ -113,6 +184,8 @@ def ocr_image(img: Image.Image) -> str:
 
 
 def get_text(path: Path, ext: str) -> str:
+    if ext in TEXT_KINDS:
+        return spreadsheet_text(path, ext)
     text = pdf_text(path) if ext == "pdf" else ""
     if len(text.strip()) < 40:  # scanned PDF or image -> OCR
         parts = []
@@ -126,6 +199,8 @@ def get_text(path: Path, ext: str) -> str:
 
 
 def make_thumbnail(path: Path, ext: str, out: Path) -> bool:
+    if ext in TEXT_KINDS:
+        return False
     try:
         if ext == "pdf":
             ims = pdf_pages_to_images(path, dpi=90, max_pages=1)
@@ -164,10 +239,10 @@ DATE_PATTERNS = [
 
 EXPIRY_WORDS = re.compile(
     r"(expir|exp\b|exp\.|valid\s*(until|to|thru|through)|renew|due\s*date|refresher\s*due|re-?cert|"
-    r"next\s*due|until|end\s*date)", re.I)
+    r"next\s*due|until|end\s*date|next\s*(insp|test|service|tag|check)|due\b)", re.I)
 ISSUE_WORDS = re.compile(
     r"(issue|issued|complet|awarded|attain|achieved|conferred|assess|course\s*date|training\s*date|"
-    r"date\s*of\s*(issue|completion|training|assessment)|start\s*date|valid\s*from|inducted|dated)", re.I)
+    r"date\s*of\s*(issue|completion|training|assessment)|start\s*date|valid\s*from|inducted|dated|last\s*(insp|test|service|check)|inspected|tested)", re.I)
 DOB_WORDS = re.compile(r"(birth|\bdob\b|d\.o\.b|born)", re.I)
 
 
@@ -309,7 +384,7 @@ def _code_rx(code: str) -> re.Pattern:
 
 _CODE_RX = {code: _code_rx(code) for c in CATEGORIES for code in c["codes"]}
 _CODE_RX.update({code: _code_rx(code) for code in UNIT_TITLES})
-WEAK_CATEGORIES = {"training", "site_induction"}  # generic words, only win if nothing specific matches
+WEAK_CATEGORIES = {"training", "site_induction", "other_register"}  # generic words, only win if nothing specific matches
 
 
 def has_code(upper: str, code: str) -> bool:
@@ -395,6 +470,8 @@ def detect_title(text: str, cat_id: str) -> str:
         if has_code(upper, code):
             return f"{code} {title}"
     m = re.search(r"\b([A-Z]{3,6}[A-Z0-9]{2,4}\d{3}[A-Z]?)\b", upper)  # generic unit code
+    if is_register(cat_id):
+        return CATEGORY_BY_ID[cat_id]["name"]
     if m and cat_id not in ("drivers_licence", "police_check", "wwc", "security_id"):
         return f"{CATEGORY_BY_ID[cat_id]['name']} ({m.group(1)})"
     return CATEGORY_BY_ID[cat_id]["name"]
@@ -407,6 +484,14 @@ def rule_extract(text: str, today: date | None = None) -> dict:
     if cat == "drivers_licence" and not issuer and re.search(r"western australia", text, re.I):
         issuer, itype = "WA Department of Transport", "government"
     dates = classify_dates(text, today)
+    if is_register(cat):
+        # registers list many items: last inspection = latest past date, next due = earliest upcoming date
+        today_ = today or date.today()
+        all_dates = [f["date"] for f in find_dates(text) if not DOB_WORDS.search(f["near"])]
+        past = [d for d in all_dates if d <= today_]
+        future = [d for d in all_dates if today_ < d <= add_years(today_, 3)]
+        dates["completion_date"] = max(past) if past else dates["completion_date"]
+        dates["expiry_date"] = min(future) if future else dates["expiry_date"]
     expiry = dates["expiry_date"]
     estimated = False
     validity = dates["validity_years"] or CATEGORY_BY_ID[cat]["validity_years"]
